@@ -1,0 +1,51 @@
+{
+  "$schema": "https://github.com/hyperledger-labs/fablo/releases/download/2.2.0/schema.json",
+  "global": {
+    "fabricVersion": "2.5.9",
+    "tls": true,
+    "peerDevMode": false
+  },
+  "orgs": [
+    {
+      "organization": { "name": "Orderer", "domain": "orderer.example.com" },
+      "orderers": [{ "groupName": "group1", "type": "raft", "instances": 1 }]
+    },
+    {
+      "organization": { "name": "BankA", "domain": "banka.example.com" },
+      "peer": { "instances": 1, "db": "CouchDb" }
+    },
+    {
+      "organization": { "name": "BankB", "domain": "bankb.example.com" },
+      "peer": { "instances": 1, "db": "CouchDb" }
+    },
+    {
+      "organization": { "name": "BankC", "domain": "bankc.example.com" },
+      "peer": { "instances": 1, "db": "CouchDb" }
+    },
+    {
+      "organization": { "name": "Regulator", "domain": "regulator.example.com" },
+      "peer": { "instances": 1, "db": "CouchDb" }
+    }
+  ],
+  "channels": [
+    {
+      "name": "fraud-intel",
+      "orgs": [
+        { "name": "BankA", "peers": ["peer0"] },
+        { "name": "BankB", "peers": ["peer0"] },
+        { "name": "BankC", "peers": ["peer0"] },
+        { "name": "Regulator", "peers": ["peer0"] }
+      ]
+    }
+  ],
+  "chaincodes": [
+    {
+      "name": "fraudintel",
+      "version": "0.1.0",
+      "lang": "node",
+      "channel": "fraud-intel",
+      "directory": "./chaincode/fraudintel",
+      "endorsement": "OutOf(2, 'BankAMSP.member', 'BankBMSP.member', 'BankCMSP.member')"
+    }
+  ]
+}
