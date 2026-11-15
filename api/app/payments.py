@@ -19,7 +19,7 @@ from .auth_deps import current_session
 from .risk import behaviour as bh
 from .risk import fri
 from .risk.normalize import PayeeError, normalise
-from .risk.rules import ALLOW, TRUST_AGE_HOURS, TRUST_MIN_PAISE, Signals, rupees, score
+from .risk.rules import ALLOW, BEHAVIOUR_MEDIUM, TRUST_AGE_HOURS, TRUST_MIN_PAISE, Signals, rupees, score
 
 router = APIRouter()
 IST = timezone(timedelta(hours=5, minutes=30))  # fixed offset: India has no daylight saving
@@ -158,6 +158,11 @@ def score_payment(
     behaviour_note = None
     try:
         sample = bh.validate(body.behaviour)
+        if sample is None:
+            behaviour_note = (
+                "no typing data sent" if not body.behaviour
+                else f"fewer than {bh.MIN_KEYSTROKES} timed keystrokes (pasted or autofilled?)"
+            )
     except bh.BehaviourInvalid as exc:
         sample, behaviour_note = None, f"rejected: {exc}"
 
@@ -179,13 +184,14 @@ def score_payment(
             "SELECT "
             "  bool_or(status = 'completed' AND trust_eligible AND created_at <= now() - make_interval(hours => %s)) AS trusted, "
             "  bool_or(status = 'completed' AND created_at > now() - interval '24 hours') AS paid_recently, "
-            "  COALESCE(sum(amount_paise) FILTER (WHERE created_at > now() - interval '24 hours'), 0) AS total_24h "
+            # Only money actually sent counts towards "sent" totals: a held payment moved nothing.
+            "  COALESCE(sum(amount_paise) FILTER (WHERE status = 'completed' AND created_at > now() - interval '24 hours'), 0) AS total_24h "
             "FROM payments WHERE user_id = %s AND payee_hash = %s",
             (TRUST_AGE_HOURS, user_id, payee_hash),
         ).fetchone()
         untrusted_total = conn.execute(
             "SELECT COALESCE(sum(amount_paise), 0) AS t FROM payments "
-            "WHERE user_id = %s AND NOT payee_trusted AND created_at > now() - interval '24 hours'",
+            "WHERE user_id = %s AND NOT payee_trusted AND status = 'completed' AND created_at > now() - interval '24 hours'",
             (user_id,),
         ).fetchone()["t"]
         history = [
@@ -249,9 +255,28 @@ def score_payment(
             "hourIst": signals.hour_ist,
             "syncedPasskey": signals.synced_passkey,
             "injected": demo.model_dump() if settings.DEMO_SIGNALS else None,
+            "operatorSignalsOn": settings.DEMO_SIGNALS and demo != DemoSignals(),
             "consortium": "not connected yet (slice 2c)",
             "behaviour": {**behaviour.as_dict(), "enrolMin": bh.ENROL_MIN, "note": behaviour_note},
         }
+        # Why this payment did or did not teach the profile, so a stuck "learning" status is explainable.
+        why = []
+        if sample is None:
+            why.append("no usable typing data")
+        if behaviour.anomaly is not None and behaviour.anomaly >= BEHAVIOUR_MEDIUM:
+            # Never learn from typing that already looks like someone else: otherwise an attacker whose
+            # payments slip through would slowly teach the profile their own rhythm.
+            why.append("typing did not match the profile")
+        if status != "completed":
+            why.append("payment held for checks")
+        if decision.coaching_signals:
+            why.append("coaching signals were on")
+        if decision.takeover_signals:
+            why.append("takeover signals were on")
+        not_learned = "; ".join(why) or None
+        clean = not_learned is None
+        snapshot["behaviour"].update({"captured": sample is not None, "learned": not_learned is None,
+                                      "notLearnedBecause": not_learned})
         payment_id = uuid.uuid4()
         stored = {
             "paymentId": str(payment_id),
@@ -281,7 +306,6 @@ def score_payment(
         )
         if sample is not None:
             # Only clean payments teach the profile what "normal" looks like for this user.
-            clean = status == "completed" and not decision.coaching_signals and not decision.takeover_signals
             conn.execute(
                 "INSERT INTO behaviour_samples (user_id, payment_id, features, clean) VALUES (%s, %s, %s, %s)",
                 (user_id, payment_id, Jsonb(sample), clean),

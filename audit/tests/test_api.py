@@ -96,3 +96,14 @@ def test_retried_delivery_with_same_idempotency_key_is_stored_once(client):
     assert first.status_code == 201 and again.status_code == 200
     assert again.json()["duplicate"] is True and again.json()["hash"] == first.json()["hash"]
     assert client.get(f"/streams/{s}/root").json()["entries"] == 1
+
+
+
+def test_restart_runs_no_ddl(client):
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from app import main
+
+    with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as conn:
+        assert main.migrate(conn) is False

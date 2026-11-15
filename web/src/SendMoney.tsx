@@ -14,6 +14,7 @@ import {
   type PaymentRow,
 } from "./api";
 import { useBehaviour } from "./behaviour";
+import BehaviourProfile from "./BehaviourProfile";
 
 const BAND_LABEL: Record<Band, string> = {
   allow: "Allowed",
@@ -135,6 +136,8 @@ export default function SendMoney() {
 
   return (
     <div className="stack">
+      <BehaviourProfile />
+
       <section>
         <h2>Send money</h2>
         <form onSubmit={onSubmit} {...behaviour.handlers}>
@@ -224,11 +227,15 @@ export default function SendMoney() {
                   : a.signals.behaviour.model === "none"
                     ? "no typing data for this payment"
                     : `${a.signals.behaviour.model}, anomaly ${a.signals.behaviour.anomaly?.toFixed(2)} from ${a.signals.behaviour.samples} clean payments`}
-                {a.signals.behaviour.note && ` (${a.signals.behaviour.note})`}
+              </p>
+              <p className="muted small" data-testid="behaviour-this-payment">
+                This payment: {a.signals.behaviour.captured ? "typing captured" : `typing not captured (${a.signals.behaviour.note})`}
+                {" · "}
+                {a.signals.behaviour.learned ? "added to your profile" : `not added to your profile (${a.signals.behaviour.notLearnedBecause})`}
               </p>
               <p className="muted small">
                 Engine: {decision.engine}. Consortium ledger: {a.signals.consortium}.
-                {a.signals.injected && " Device and telecom signals were set by the demo operator."}
+                {a.signals.operatorSignalsOn && " Device and telecom signals were set by the demo operator."}
               </p>
             </div>
           )}

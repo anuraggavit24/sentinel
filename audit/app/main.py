@@ -61,6 +61,36 @@ def connect() -> psycopg.Connection:
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
+# Bump when SCHEMA changes. DDL runs only when the stored version is older, serialised with an advisory
+# lock: ALTER TABLE ... IF NOT EXISTS takes an ACCESS EXCLUSIVE lock even when nothing changes, so running
+# it on every start would block appends during a restart (same bug found and fixed in the API).
+SCHEMA_VERSION = 2
+_MIGRATION_LOCK = 7_402_119
+
+
+def migrate(conn: psycopg.Connection) -> bool:
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (id INT PRIMARY KEY CHECK (id = 1), version INT NOT NULL)")
+    conn.commit()
+    row = conn.execute("SELECT version FROM schema_meta WHERE id = 1").fetchone()
+    if row and row["version"] >= SCHEMA_VERSION:
+        return False
+    conn.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK,))
+    try:
+        row = conn.execute("SELECT version FROM schema_meta WHERE id = 1").fetchone()
+        if row and row["version"] >= SCHEMA_VERSION:
+            return False
+        with conn.transaction():
+            conn.execute(SCHEMA)
+            conn.execute(
+                "INSERT INTO schema_meta (id, version) VALUES (1, %s) "
+                "ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version",
+                (SCHEMA_VERSION,),
+            )
+        return True
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK,))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Postgres may still be starting when the API container boots, so retry for up to 60 s.
@@ -68,7 +98,7 @@ async def lifespan(_: FastAPI):
     while True:
         try:
             with connect() as conn:
-                conn.execute(SCHEMA)
+                migrate(conn)
             break
         except psycopg.OperationalError:
             if time.time() > deadline:

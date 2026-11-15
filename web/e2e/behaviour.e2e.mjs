@@ -50,15 +50,38 @@ await page.getByLabel("Display name").fill("Typist");
 await page.getByRole("button", { name: "Create account with a passkey" }).click();
 await page.getByRole("heading", { name: "Send money" }).waitFor({ timeout: 10000 });
 
-let r = await payTyped("grocer0@okicici", "300", 95, 140);
-ok(r.status.includes("learning your typing (0 of 5"), `first payment: ${r.status}`);
-for (let i = 1; i <= 5; i++) r = await payTyped(`grocer${i}@okicici`, "300", 95, 140);
-ok(r.status.includes("robust-z"), `after 5 clean payments the profile is active: ${r.status}`);
-ok(!r.analyst.some((t) => t.includes("Typing and mouse use differ")), "the owner's own rhythm is not flagged");
+// Guided enrolment: passkey check, then 5 practice samples typed by hand
+ok((await page.getByTestId("behaviour-profile").innerText()).includes("Not set up yet"), "profile starts not set up");
+await page.getByRole("button", { name: "Set up typing profile" }).click();
+for (let i = 0; i < 5; i++) {
+  await page.getByText(`Sample ${i + 1} of 5`).waitFor({ timeout: 10000 });
+  const codes = await page.locator(".practice code").allInnerTexts();
+  await typeHuman(page.getByLabel("Practice UPI ID"), codes[0], 95, 140);
+  await typeHuman(page.getByLabel("Practice amount"), codes[1], 95, 140);
+  await page.getByRole("button", { name: "Save sample" }).click();
+}
+await page.getByText("Active: built from 5 clean samples").waitFor({ timeout: 10000 });
+ok(true, "after a passkey check and 5 typed samples the profile is active");
 
-r = await payTyped("grocer2@okicici", "300", 35, 45);
+let r = await payTyped("corner.shop@okicici", "300", 95, 140);
+ok(r.status.includes("robust-z") && !r.analyst.some((t) => t.includes("Typing and mouse use differ")), `owner's rhythm not flagged: ${r.status}`);
+const thisPayment = await page.getByTestId("behaviour-this-payment").innerText();
+ok(thisPayment.includes("typing captured") && thisPayment.includes("added to your profile"), `diagnostics: ${thisPayment}`);
+ok(!(await page.locator(".analyst").innerText()).includes("set by the demo operator"), "no false 'operator signals' note");
+
+r = await payTyped("corner.shop@okicici", "300", 35, 45);
 ok(r.analyst.some((t) => t.includes("Typing and mouse use differ")), `a different rhythm is flagged: ${r.status}`);
 ok(r.customer.some((t) => t.includes("unusual for you")), "customer sees a plain-language note, no numbers");
+
+// Pasting into the payment form: no typing data, profile exists -> not a free pass
+await page.getByLabel("Pay to").selectOption("UPI");
+await page.getByLabel("UPI ID").fill("pasted.payee@okicici");
+await page.getByLabel("Amount (₹)").fill("300");
+await page.getByRole("button", { name: "Check and send" }).click();
+await page.getByTestId("behaviour-this-payment").waitFor();
+await sleep(300);
+const pasted = await page.locator(".analyst .reasons li").allInnerTexts();
+ok(pasted.some((t) => t.includes("No usable typing data")), "filled without typing -> BEHAVIOUR_MISSING");
 
 await browser.close();
 process.exit(failures ? 1 : 0);

@@ -181,3 +181,24 @@ def test_payments_refused_without_hmac_key(client, monkeypatch):
 
     monkeypatch.setattr(settings, "PAYEE_HMAC_KEY", "")
     assert pay(client).status_code == 503
+
+
+
+def test_held_payments_do_not_count_as_money_sent(client):
+    """Found in a live demo: blocked attempts were counted in "sent to untrusted payees", so one held
+    ₹1.85 lakh attempt pushed every later new-payee payment to step-up for 24 hours."""
+    set_signals(client, simSwapHoursAgo=1, newDevice=True)
+    held = pay(client, "95000", payee={"upi": "drain.one@okaxis"}).json()
+    assert held["status"] == "held"
+    set_signals(client)
+    small = pay(client, "250", payee={"upi": "kirana.store@okicici"}).json()
+    assert small["band"] == "allow"
+    assert "UNTRUSTED_PAYEES_TOTAL" not in [r["code"] for r in small["analyst"]["reasons"]]
+
+
+def test_split_still_caught_when_counting_only_sent_money(client):
+    set_signals(client, activeCall=True)
+    first = pay(client, "9999", payee={"upi": "split.two@okaxis"}).json()
+    second = pay(client, "9999", payee={"upi": "split.two@okaxis"}).json()
+    third = pay(client, "9999", payee={"upi": "split.two@okaxis"}).json()
+    assert first["status"] == "completed" and second["band"] == "step_up" and third["band"] == "step_up"

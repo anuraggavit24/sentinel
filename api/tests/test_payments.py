@@ -222,7 +222,7 @@ def test_behaviour_learns_then_scores(client):
     assert first["analyst"]["signals"]["behaviour"]["model"] == "learning"
     last = enrol(client).json()
     b = last["analyst"]["signals"]["behaviour"]
-    assert b["model"] == "robust-z" and b["anomaly"] < 0.4
+    assert b["model"] == "robust-z" and b["anomaly"] < 0.3
 
 
 def test_someone_else_typing_is_flagged(client):
@@ -268,3 +268,40 @@ def test_no_key_or_text_is_stored(client):
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         f = conn.execute("SELECT features FROM behaviour_samples WHERE payment_id = %s", (r["paymentId"],)).fetchone()[0]
     assert "keys" not in f and "text" not in f and "secret123" not in str(f)
+
+
+
+def test_behaviour_diagnostics_explain_capture_and_learning(client):
+    no_data = pay(client, "300", payee={"upi": "diag.one@okicici"}).json()["analyst"]["signals"]["behaviour"]
+    assert no_data["captured"] is False and no_data["note"] == "no typing data sent"
+    assert no_data["notLearnedBecause"].startswith("no usable typing data")
+
+    few = pay_b(client, "300", "diag.two@okicici", typing(keystrokes=3)).json()["analyst"]["signals"]["behaviour"]
+    assert few["captured"] is False and "fewer than 6" in few["note"]
+
+    ok = pay_b(client, "300", "diag.three@okicici", typing()).json()["analyst"]["signals"]["behaviour"]
+    assert ok["captured"] is True and ok["learned"] is True and ok["notLearnedBecause"] is None
+
+    set_signals(client, activeCall=True)
+    coached = pay_b(client, "300", "diag.four@okicici", typing()).json()["analyst"]["signals"]
+    assert coached["behaviour"]["learned"] is False and "coaching signals were on" in coached["behaviour"]["notLearnedBecause"]
+    assert coached["operatorSignalsOn"] is True
+
+
+def test_operator_flag_is_false_when_no_signal_is_on(client):
+    r = pay(client, "300", payee={"upi": "quiet.payee@okicici"}).json()
+    assert r["analyst"]["signals"]["operatorSignalsOn"] is False
+
+
+
+def test_anomalous_typing_is_never_learned_even_if_the_payment_is_allowed(client):
+    import psycopg
+
+    enrol(client)
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:  # outside the 10-minute velocity window
+        conn.execute("UPDATE payments SET created_at = created_at - interval '1 hour'")
+    r = pay_b(client, "300", "grocer0@okicici", typing(dwell=210, flight=430)).json()
+    b = r["analyst"]["signals"]["behaviour"]
+    assert r["status"] == "completed" and b["learned"] is False and "did not match" in b["notLearnedBecause"]
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        assert conn.execute("SELECT clean FROM behaviour_samples WHERE payment_id = %s", (r["paymentId"],)).fetchone()[0] is False

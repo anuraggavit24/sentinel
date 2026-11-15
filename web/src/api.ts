@@ -129,7 +129,17 @@ export interface AnalystView {
     consortium: string;
     friCategory: string | null;
     injected: DemoSignals | null;
-    behaviour: { model: string; samples: number; anomaly: number | null; enrolMin: number; note: string | null };
+    operatorSignalsOn: boolean;
+    behaviour: {
+      model: string;
+      samples: number;
+      anomaly: number | null;
+      enrolMin: number;
+      note: string | null;
+      captured: boolean;
+      learned: boolean;
+      notLearnedBecause: string | null;
+    };
   };
 }
 
@@ -187,3 +197,24 @@ export const putSignals = (sessionId: string, token: string, s: DemoSignals) =>
   call<DemoSignals>(`/demo/sessions/${sessionId}/signals`, { method: "PUT", body: JSON.stringify(s), headers: operatorHeaders(token) });
 export const getDemoFri = (token: string) =>
   call<{ mock: boolean; numbers: Record<string, string> }>("/demo/fri", { headers: operatorHeaders(token) });
+
+// ---------------------------------------------------------------- Module 2b: guided behaviour enrolment
+
+export interface BehaviourProfile {
+  samples: number;
+  enrolMin: number;
+  enrolled: boolean;
+  enrolment: { added: number; needed: number; expiresAt: string } | null;
+}
+
+export const getBehaviourProfile = () => call<BehaviourProfile>("/behaviour/profile");
+
+/** Opens a 10-minute enrolment window after a fresh passkey check (Windows Hello prompt). */
+export async function startEnrolment(reset: boolean) {
+  const { challengeId, options } = await post<Ceremony<PublicKeyCredentialRequestOptionsJSON>>("/behaviour/enrol/options");
+  const credential = await startAuthentication({ optionsJSON: options });
+  return post<{ open: boolean; needed: number; minutes: number }>("/behaviour/enrol/start", { challengeId, credential, reset });
+}
+
+export const sendEnrolmentSample = (behaviour: BehaviourSample | null) =>
+  post<{ added: number; needed: number; done: boolean }>("/behaviour/enrol/sample", { behaviour });

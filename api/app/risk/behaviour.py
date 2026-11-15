@@ -31,6 +31,11 @@ FEATURES: dict[str, tuple[float, float, float, str]] = {
     "idleBeforeSubmitMs": (0, 600_000, 800, "pause before pressing send"),
     "pointerSpeedPxMs": (0, 20, 0.15, "mouse speed"),
 }
+# Only rhythm features go into the model. Form time, the pause before submit and mouse speed depend on
+# WHICH form is filled (fields, prompts, whether a mouse is used), not on WHO is typing: a profile built on
+# the practice form misjudged the same person on the payment form (anomaly 0.98 for the owner). They are
+# still validated and stored as context, but they are not identity.
+MODEL_FEATURES = ["dwellMeanMs", "dwellStdMs", "flightMeanMs", "flightStdMs", "correctionRate"]
 MIN_KEYSTROKES = 6
 ENROL_MIN = 5          # clean samples before any behaviour score
 PROFILE_WINDOW = 50    # most recent clean samples used for the profile (habits drift)
@@ -63,13 +68,13 @@ def validate(raw: Optional[dict]) -> Optional[dict]:
 
 
 def _matrix(samples: list[dict]) -> np.ndarray:
-    return np.array([[s[n] for n in FEATURES] for s in samples], dtype=float)
+    return np.array([[s[n] for n in MODEL_FEATURES] for s in samples], dtype=float)
 
 
 def _robust_scale(train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     med = np.median(train, axis=0)
     mad = np.median(np.abs(train - med), axis=0) * 1.4826
-    floor = np.array([FEATURES[n][2] for n in FEATURES])
+    floor = np.array([FEATURES[n][2] for n in MODEL_FEATURES])
     return med, np.maximum(mad, floor)
 
 
@@ -102,8 +107,7 @@ class RobustZModel:
         top_idx = np.argsort(-z)[:3]
         d = float(np.mean(z[top_idx]))  # one odd feature is normal; several at once is not
         anomaly = 1 / (1 + math.exp(-(d - 3.0)))  # about 3 robust SDs -> 0.5
-        names = list(FEATURES)
-        return anomaly, [names[i] for i in top_idx if z[i] >= 2.5]
+        return anomaly, [MODEL_FEATURES[i] for i in top_idx if z[i] >= 2.5]
 
 
 class IsolationForestModel:
@@ -127,8 +131,7 @@ class IsolationForestModel:
         worse_than = float(np.mean(self.train_scores > s))
         anomaly = min(1.0, worse_than + max(0.0, (self.train_scores.min() - s) * 4))
         z = np.abs(xs)
-        names = list(FEATURES)
-        return anomaly, [names[i] for i in np.argsort(-z)[:3] if z[i] >= 2.5]
+        return anomaly, [MODEL_FEATURES[i] for i in np.argsort(-z)[:3] if z[i] >= 2.5]
 
 
 def score_robust_z(train: list[dict], sample: dict) -> tuple[float, list[str]]:

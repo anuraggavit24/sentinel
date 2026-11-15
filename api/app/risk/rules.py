@@ -18,8 +18,8 @@ TRUST_MIN_PAISE = 500_00          # a payee is trusted only after a completed pa
 TRUST_AGE_HOURS = 24              # ... made more than 24 hours ago, with no coaching signals
 SPLIT_TOTAL_PAISE = 10_000_00     # several payments to one untrusted payee adding up to ₹10,000 in 24 h
 UNTRUSTED_TOTAL_PAISE = 50_000_00 # ₹50,000 in 24 h to payees you do not trust yet
-BEHAVIOUR_MEDIUM = 0.4
-BEHAVIOUR_HIGH = 0.6
+BEHAVIOUR_MEDIUM = 0.3
+BEHAVIOUR_HIGH = 0.5
 
 
 @dataclass
@@ -31,10 +31,10 @@ class Signals:
     # 24 hours ago. A ₹1 "verification" payment, or anything sent while on a call, never creates trust.
     payee_trusted: bool
     payee_paid_recently: bool = False      # some completed payment to this payee in the last 24 hours
-    payee_total_24h_paise: int = 0          # earlier amounts to this payee in 24 h (completed or held)
-    untrusted_total_24h_paise: int = 0      # earlier amounts to any untrusted payee in 24 h
+    payee_total_24h_paise: int = 0          # earlier amounts actually SENT (completed) to this payee in 24 h
+    untrusted_total_24h_paise: int = 0      # earlier amounts actually SENT to untrusted payees in 24 h
     history_paise: list[int] = field(default_factory=list)   # this user's previous payment amounts
-    payments_last_10_min: int = 0
+    payments_last_10_min: int = 0         # attempts, held or not: a burst of attempts is itself a signal
     fri_category: Optional[str] = None    # None | MEDIUM | HIGH | VERY_HIGH (payee mobile number)
     # Device and session context. In the web demo these come from the signal injector.
     sim_swap_hours_ago: Optional[float] = None
@@ -148,7 +148,7 @@ def score(s: Signals) -> Decision:
     if 0 <= s.hour_ist < 5:
         add("NIGHT_TIME", 8, "Payment between midnight and 5 am", "TRANSACTION")
     if s.payments_last_10_min >= 3:
-        add("RAPID_PAYMENTS", 15, f"{s.payments_last_10_min} payments in the last 10 minutes", "TRANSACTION")
+        add("RAPID_PAYMENTS", 15, f"{s.payments_last_10_min} payment attempts in the last 10 minutes", "TRANSACTION")
 
     # ---- telecom
     if s.fri_category in FRI_POINTS:
@@ -181,8 +181,8 @@ def score(s: Signals) -> Decision:
         add("SYNCED_PASSKEY_NEW_DEVICE", 10, "Synced passkey used on a new device", "DEVICE")
 
     # ---- behaviour: typing and mouse rhythm compared with this user's own clean history
-    # Thresholds from scripts/eval_behaviour.py (chosen on a separate seed, synthetic users):
-    # >= 0.4 flags ~0.5% of genuine attempts and ~82% of other people; >= 0.6 flags ~0% and ~58%.
+    # Thresholds from scripts/eval_behaviour.py (rhythm features only, chosen on seed 11, synthetic users):
+    # >= 0.3 flags ~0.5% of genuine attempts and ~84% of other people; >= 0.5 flags ~0% and ~55%.
     if s.behaviour_anomaly is not None and s.behaviour_anomaly >= BEHAVIOUR_MEDIUM:
         strong = s.behaviour_anomaly >= BEHAVIOUR_HIGH
         what = ", ".join(s.behaviour_features[:2]) or "typing and mouse rhythm"

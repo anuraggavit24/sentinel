@@ -72,3 +72,6 @@ th { color: #66707a; font-weight: 500; }
 .analyst { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #cfd3d8; }
 .inline-form { display: flex; gap: 8px; margin-top: 8px; }
 .inline-form input { flex: 1; }
+.profile-card { background: #f8faff; border: 1px solid #dbe5ff; border-radius: 10px; padding: 14px 16px; }
+.practice { margin-top: 12px; }
+code { background: #eef2f7; padding: 1px 6px; border-radius: 4px; font-size: 13px; }

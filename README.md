@@ -146,6 +146,12 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 15 | Vite proxy appended to `X-Forwarded-For` | The browser could choose the IP the API records | The proxy overwrites the header with the socket address | verified with an echo server: `6.6.6.6` sent, `127.0.0.1` received |
 | 16 | `PAYEE_HMAC_KEY` had a default in code | A demo key could silently reach a deployment | No default; payments return 503 until it is set | `test_payments_refused_without_hmac_key` |
 
+| 17 | "Sent" totals counted held payments | Found in a live demo: one held ₹1.85 lakh attempt pushed every new-payee payment (even ₹250) to step-up for 24 hours, and the customer was told money was "sent" | Totals count completed payments only; held attempts still count for velocity | `test_held_payments_do_not_count_as_money_sent` (fails without the fix) |
+| 18 | Behaviour model scored form-dependent features | Owner's own typing scored 0.98 after enrolling on the practice form | Model uses rhythm features only | `test_form_context_does_not_count_as_identity`; browser test: owner 0.05 |
+| 19 | An allowed payment with anomalous typing was learned | An attacker whose payment slips through would teach the profile their rhythm | Samples with anomaly ≥ 0.3 are never learned | `test_anomalous_typing_is_never_learned_even_if_the_payment_is_allowed` |
+| 20 | Schema DDL ran on every start-up | `ALTER TABLE ... IF NOT EXISTS` takes an exclusive lock even when nothing changes: concurrent start-ups deadlocked in-flight payments (flaky test, 2 of 6 runs); in production, a rolling restart | DDL only when the schema version is older, serialised with an advisory lock; same fix in the audit service | `test_startup_does_not_block_on_a_busy_payments_table` (fails without the fix); parallel tests 10/10 |
+| 21 | "Signals were set by the demo operator" shown on every demo payment | The analyst view claimed injected signals when none were on | Shown only when a signal is actually on | `test_operator_flag_is_false_when_no_signal_is_on` |
+
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
 audit service, a failed sign-in does not burn its challenge, and registration still reveals taken usernames.
@@ -206,11 +212,20 @@ The payment form records **timing only**: how long keys are held, the pause betw
 paste, time to fill the form, the pause before pressing send, and mouse speed. Key identities are used
 in the browser only to pair key-down with key-up; no key, character or text is sent or stored.
 
-- **Profile:** the user's last 50 **clean** samples (payments allowed with no coaching or takeover
-  signals). An attacker's typing during a takeover is stored but never trains the profile.
-- **Model:** robust z-score per feature (median and MAD), from 5 clean samples. Score = mean of the three
-  largest deviations, squashed to 0–1.
-- **Rule:** anomaly ≥ 0.4 adds 10 points, ≥ 0.6 adds 20. Behaviour never blocks a payment on its own.
+- **Profile:** the user's last 50 **clean** samples. A sample is clean only if the payment was allowed,
+  had no coaching or takeover signals, **and its typing already matched the profile** (anomaly < 0.3).
+  So an attacker's typing never trains the profile, even when one of their payments slips through.
+- **Guided enrolment:** "Set up typing profile" asks for a **fresh passkey check** (Windows Hello), then
+  5 practice samples typed by hand, within 10 minutes, in that session only. Without the passkey check,
+  someone holding only a stolen session cookie could enrol their own rhythm as the victim's.
+- **Model features: rhythm only** (key hold time and its variation, pause between keys and its
+  variation, correction rate). Form time, the pause before submit and mouse speed are recorded but not
+  scored: they depend on which form is filled, not on who fills it. With them included, the owner's own
+  typing scored 0.98 on the payment form after enrolling on the practice form.
+- **Model:** robust z-score per feature (median and MAD), from 5 clean samples.
+- **Rule:** anomaly ≥ 0.3 adds 10 points, ≥ 0.5 adds 20. Behaviour never blocks a payment on its own.
+- **Diagnostics:** the analyst view says, per payment, whether typing was captured and why it was or was
+  not added to the profile.
 - **Missing data is not a free pass:** once a profile exists, a payment with no usable typing data
   (all pasted, scripted, or a rejected payload) adds 10 points. Cost: users who paste everything pay it.
 - **Crafted payloads:** out-of-range or non-numeric values are rejected, not clamped, and never learned.
@@ -222,16 +237,16 @@ in the browser only to pair key-down with key-up; no key, character or text is s
 ```
 Synthetic evaluation: 60 users, 20 genuine + 20 impostor attempts each, seed 7
 
-model              history    EER    at        anomaly >= 0.4              anomaly >= 0.6      
+model              history    EER    at        anomaly >= 0.3              anomaly >= 0.5      
                                               genuine      impostor       genuine      impostor
-robust-z                 5   7.8%  0.30          2.5%         83.1%          0.4%         61.1%
-robust-z                10   5.9%  0.26          0.2%         78.5%          0.0%         51.5%
-robust-z                19   6.4%  0.26          0.7%         81.3%          0.0%         54.2%
-robust-z                40   4.7%  0.25          0.0%         82.8%          0.0%         56.7%
-isolation-forest        20  13.7%  0.90         75.4%         99.3%         53.3%         98.5%
-isolation-forest        40  10.5%  0.93         73.1%         99.9%         52.0%         99.3%
+robust-z                 5   4.9%  0.21          0.9%         84.5%          0.0%         53.8%
+robust-z                10   5.3%  0.19          0.2%         82.4%          0.0%         52.5%
+robust-z                19   4.7%  0.18          0.0%         81.9%          0.0%         52.0%
+robust-z                40   3.8%  0.18          0.0%         83.3%          0.0%         51.4%
+isolation-forest        20  11.5%  0.90         84.8%        100.0%         66.3%         99.5%
+isolation-forest        40   8.5%  0.95         81.9%         99.8%         60.5%         99.8%
 
-Thresholds 0.4 / 0.6 were chosen on a different seed (11) than this report (7).
+Thresholds 0.3 / 0.5 were chosen on a different seed (11) than this report (7).
 SYNTHETIC DATA ONLY. Real-world error rates need the volunteer study.
 ```
 
@@ -240,8 +255,8 @@ How to read it:
   the equal error rate and was badly calibrated (it flagged about half of genuine attempts at 0.6).
   The synthetic users have independent, bell-shaped features, which favours the z-score; the forest's
   advantage (combinations of features) can only show up on real data, so it is kept for re-evaluation.
-- **At the chosen thresholds**, roughly 0–2.5% of a user's own attempts are flagged at 0.4 and
-  50–60% of other people's attempts are flagged at 0.6.
+- **At the chosen thresholds**, under 1% of a user's own attempts are flagged at 0.3 (about 82–85% of
+  other people's are), and none at 0.5 (about 51–54% of other people's are).
 - **These are not real-world numbers.** Real typing is messier (fatigue, a new keyboard, a phone vs a
   laptop). Real error rates need real people; that is the next part of 2b.
 
@@ -250,3 +265,11 @@ How to read it:
   harden collection SDKs; this demo does not.
 - Five samples is a thin profile; early decisions are less reliable.
 - The profile is per user across devices; typing on a phone and on a laptop will differ.
+
+### Resetting demo data
+
+Payments, typing samples and operator signals can be cleared without deleting accounts or passkeys:
+
+```bash
+docker exec sentinel-db psql -U sentinel -d sentinel -c "TRUNCATE payments, behaviour_samples, behaviour_enrolment, session_signals CASCADE;"
+```
