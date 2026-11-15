@@ -68,3 +68,7 @@ th { color: #66707a; font-weight: 500; }
 .pill.band-step_up { background: #fffaeb; color: #93370d; }
 .pill.band-sandbox { background: #fef3f2; color: #b42318; }
 .field { display: grid; gap: 6px; font-size: 14px; font-weight: 500; }
+.reasons.plain li { list-style: disc; margin-left: 18px; }
+.analyst { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #cfd3d8; }
+.inline-form { display: flex; gap: 8px; margin-top: 8px; }
+.inline-form input { flex: 1; }

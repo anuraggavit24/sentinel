@@ -42,7 +42,10 @@ services:
       RP_ORIGINS: http://localhost:5173
       AUDIT_URL: http://audit-api:8800
       AUDIT_STREAM: BankAMSP-auth
-      DEMO_SIGNALS: "1"  # demo only: enables the signal injector (SIM swap, new device, call...)
+      DEMO_SIGNALS: "1"  # demo only: enables the operator signal injector (SIM swap, new device, call...)
+      DEMO_OPERATOR_TOKEN: "demo-operator-token-change-me"  # demo only: the injector needs this token
+      SHOW_ANALYST_VIEW: "1"  # demo only: score, points and FRI category in responses; off for real customers
+      PAYEE_HMAC_KEY: "consortium-demo-key-v1"  # demo only; same key as scripts/scenario4.sh and the ledger
       AUDIT_TOKEN: "demo-audit-token-change-me"  # must match audit-api
     ports:
       - "127.0.0.1:8000:8000"

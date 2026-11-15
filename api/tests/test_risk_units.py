@@ -55,7 +55,7 @@ def test_upi_is_lowercased_and_masked():
 # ---------------------------------------------------------------- rules
 
 def base(**kw) -> Signals:
-    d = dict(amount_paise=500_00, hour_ist=14, payee_type="UPI", payee_seen_before=True)
+    d = dict(amount_paise=500_00, hour_ist=14, payee_type="UPI", payee_trusted=True)
     d.update(kw)
     return Signals(**d)
 
@@ -66,7 +66,7 @@ def test_ordinary_payment_to_known_payee_is_allowed_with_no_reasons():
 
 
 def test_new_payee_alone_is_allowed_but_explained():
-    d = score(base(payee_seen_before=False))
+    d = score(base(payee_trusted=False))
     assert d.band == ALLOW and [r.code for r in d.reasons] == ["NEW_PAYEE"]
 
 
@@ -84,25 +84,25 @@ def test_fri_high_risk_payee_number():
 
 
 def test_account_takeover_goes_to_sandbox():
-    d = score(base(payee_seen_before=False, amount_paise=40_000_00, sim_swap_hours_ago=3, new_device=True))
+    d = score(base(payee_trusted=False, amount_paise=40_000_00, sim_swap_hours_ago=3, new_device=True))
     assert d.band == SANDBOX and d.takeover_signals and d.score >= 70
 
 
 def test_high_score_without_takeover_signals_is_never_sandbox():
     # Coached customer: lots of risk, but it is the real customer on their own device.
-    d = score(base(payee_seen_before=False, amount_paise=90_000_00, active_call=True, screen_sharing=True))
+    d = score(base(payee_trusted=False, amount_paise=90_000_00, active_call=True, screen_sharing=True))
     assert d.score >= 70 and d.coaching_signals and not d.takeover_signals
     assert d.band == STEP_UP
     assert "CALL_NEW_PAYEE_LARGE" in [r.code for r in d.reasons]
 
 
 def test_sim_swap_without_new_device_is_step_up_not_sandbox():
-    d = score(base(payee_seen_before=False, amount_paise=90_000_00, sim_swap_hours_ago=2, integrity="FAIL"))
+    d = score(base(payee_trusted=False, amount_paise=90_000_00, sim_swap_hours_ago=2, integrity="FAIL"))
     assert d.score >= 70 and d.band == STEP_UP
 
 
 def test_score_is_capped_and_reasons_sorted():
-    d = score(base(payee_seen_before=False, amount_paise=3_00_000_00, hour_ist=2, payments_last_10_min=5,
+    d = score(base(payee_trusted=False, amount_paise=3_00_000_00, hour_ist=2, payments_last_10_min=5,
                    fri_category="VERY_HIGH", sim_swap_hours_ago=1, new_device=True, integrity="FAIL",
                    active_call=True, screen_sharing=True, accessibility_services=True, synced_passkey=True))
     assert d.score == 100
@@ -135,3 +135,42 @@ def test_spoofed_header_behind_proxy_takes_rightmost_untrusted_hop():
 def test_local_demo_all_hops_trusted_and_ipv4_mapped_addresses():
     assert client_ip("172.20.0.1", "::ffff:127.0.0.1", TRUSTED) == "127.0.0.1"
     assert client_ip("::ffff:203.0.113.9", None, TRUSTED) == "203.0.113.9"
+
+
+
+# ---------------------------------------------------------------- red-team: payee trust and splitting
+
+def test_test_payment_does_not_make_a_payee_trusted_on_its_own():
+    # The ₹1 payment happened minutes ago: the payee is recently paid but NOT trusted.
+    d = score(base(payee_trusted=False, payee_paid_recently=True, payee_total_24h_paise=100,
+                   amount_paise=90_000_00, active_call=True))
+    assert d.band == STEP_UP
+    codes = [r.code for r in d.reasons]
+    assert "NEW_PAYEE" in codes and "CALL_NEW_PAYEE_LARGE" in codes
+    assert "not trusted yet" in next(r.text for r in d.reasons if r.code == "NEW_PAYEE")
+
+
+def test_split_payments_on_a_call_are_caught_by_the_running_total():
+    first = score(base(payee_trusted=False, amount_paise=9_999_00, active_call=True))
+    second = score(base(payee_trusted=False, payee_paid_recently=True, payee_total_24h_paise=9_999_00,
+                        amount_paise=9_999_00, active_call=True))
+    assert first.band == ALLOW
+    assert second.band == STEP_UP
+    assert {"SPLIT_PAYMENTS", "CALL_NEW_PAYEE_LARGE"} <= {r.code for r in second.reasons}
+
+
+def test_many_new_payees_add_up():
+    d = score(base(payee_trusted=False, untrusted_total_24h_paise=45_000_00, amount_paise=6_000_00))
+    assert "UNTRUSTED_PAYEES_TOTAL" in [r.code for r in d.reasons]
+
+
+def test_trusted_payee_is_exempt_from_running_totals():
+    d = score(base(payee_trusted=True, payee_total_24h_paise=50_000_00, amount_paise=20_000_00, active_call=True))
+    assert {r.code for r in d.reasons} == {"ACTIVE_CALL"}
+
+
+def test_customer_view_hides_fri_category_and_points():
+    d = score(base(payee_type="PHONE", fri_category="HIGH"))
+    customer = d.customer_reasons()
+    assert customer == [{"code": "TELECOM_FLAG", "text": "This payee's mobile number has been flagged by telecom fraud-risk signals", "group": "TELECOM"}]
+    assert "HIGH" not in str(customer) and "points" not in str(customer)

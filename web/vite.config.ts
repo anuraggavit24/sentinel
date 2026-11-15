@@ -12,7 +12,13 @@ export default defineConfig({
       "/api": {
         target: process.env.API_URL ?? "http://localhost:8000",
         changeOrigin: false,
-        xfwd: true, // adds X-Forwarded-For so the API sees the browser's address, not the proxy's
+        // OVERWRITE X-Forwarded-For with the real socket address. Appending (xfwd) would keep whatever
+        // the browser sent, so anyone could choose the IP the API records.
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq, req) => {
+            proxyReq.setHeader("x-forwarded-for", req.socket.remoteAddress ?? "");
+          });
+        },
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },

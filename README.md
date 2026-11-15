@@ -136,6 +136,16 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 6 | Audit service with no `AUDIT_TOKEN` accepted unauthenticated writes | A forgotten setting silently opened the log | Fail closed: 503 unless `AUDIT_ALLOW_UNAUTHENTICATED=1` (tests only) | `test_writes_are_refused_when_no_token_is_configured` |
 | 7 | Outbox delivery was at-least-once with no deduplication | A crash after the audit service stored an event but before it was marked sent wrote the event **twice** into the hash chain | Stable `idempotencyKey` per outbox row; the audit service stores a repeat once | `test_retried_delivery_with_same_idempotency_key_is_stored_once`, `test_drainer_sends_a_stable_idempotency_key_per_event` |
 
+| 8 | A payee became "known" after any completed payment, of any size, at any time | The ₹1 "verification" trick: coached ₹90,000 payment went from step_up (65) to allow (35) | Trust needs ≥ ₹500, > 24 h old, no coaching signals | `test_one_rupee_test_payment_does_not_unlock_a_large_coached_payment` and 3 more |
+| 9 | No rule on the total sent to one payee | 3 × ₹9,999 on a call all allowed | Running 24 h total per untrusted payee and across untrusted payees | `test_splitting_a_large_amount_on_a_call_is_caught`, `test_spreading_money_over_many_new_payees_adds_up` |
+| 10 | Customer-facing reason named the FRI category | Any customer could look up a number's FRI rating | Customer sees a generic telecom warning; category, points and score only in the analyst view | `test_customer_cannot_read_fri_category` |
+| 11 | The session being scored controlled its own demo signals | An attacker in the session could clear the SIM-swap signal | Operator token, per-session endpoint; old endpoint removed | `test_session_cannot_change_its_own_signals` |
+| 12 | Scoring had no idempotency | Double-click or network retry paid twice | Required `Idempotency-Key`, stored response, unique index | `test_retry_with_same_idempotency_key_does_not_pay_twice`, `test_parallel_duplicate_submits_create_one_payment` |
+| 13 | Parallel requests counted uncommitted rows | 8 parallel payments: only 2 flagged as rapid | Per-user advisory lock around scoring | `test_parallel_burst_is_fully_counted_by_the_velocity_rule` |
+| 14 | Amount parsed with `Decimal` directly | `Infinity` → 500, `1e5` and Arabic-Indic digits accepted | ASCII pattern checked before conversion | `test_hostile_amounts_are_rejected_cleanly` (11 inputs) |
+| 15 | Vite proxy appended to `X-Forwarded-For` | The browser could choose the IP the API records | The proxy overwrites the header with the socket address | verified with an echo server: `6.6.6.6` sent, `127.0.0.1` received |
+| 16 | `PAYEE_HMAC_KEY` had a default in code | A demo key could silently reach a deployment | No default; payments return 503 until it is set | `test_payments_refused_without_hmac_key` |
+
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
 audit service, a failed sign-in does not burn its challenge, and registration still reveals taken usernames.
@@ -155,14 +165,28 @@ real customer on their own device, so showing them a fake balance would be wrong
 
 | Signal group | Signals | Source in this web demo |
 |---|---|---|
-| Transaction | new payee, amount vs your usual (median of completed payments), very large amount, night time (IST), rapid payments | real, from your payment history |
+| Transaction | untrusted payee, running total to one untrusted payee (splitting), total to untrusted payees in 24 h, amount vs your usual, very large amount, night time (IST), rapid payments | real, from your payment history |
 | Telecom | payee mobile number's FRI category (also for mobile-number UPI IDs), recent SIM swap | FRI **mocked**; SIM swap **injected** |
 | Device | new device, failed integrity check, synced passkey on a new device | synced flag real (from the passkey); others **injected** |
-| Coaching | active call, screen sharing, accessibility service | **injected** (a browser cannot read these) |
+| Coaching | active call (with the running total to an untrusted payee), screen sharing, accessibility service | **injected** by the operator (a browser cannot read these) |
+| Behaviour | typing and mouse rhythm compared with your own clean history; missing data after enrolment | real, from the browser (slice 2b) |
 | Consortium | payee reported on the ledger | slice 2c |
 
-Engine `rules-v1`: weighted rules, not ML. Slice 2b adds behaviour models; the rules stay as the
-explainable safety net. Injected signals are recorded in the audit log (`DEMO_SIGNALS_SET`) and every
+**Payee trust.** A payee counts as trusted only after a completed payment of at least ₹500, made
+**more than 24 hours ago** and **without coaching signals**. A ₹1 "verification" payment, or anything
+sent while on a call, never makes a payee trusted.
+
+**What the customer sees.** Band and plain-language reasons only: no score, no points, and no FRI
+category (only "flagged by telecom fraud-risk signals"). Otherwise the payment form becomes a tool for
+checking which mule numbers are flagged. The score, points and category appear only with
+`SHOW_ANALYST_VIEW=1` (demo / fraud ops).
+
+**Demo signals** are set by an operator (`/demo/sessions/{id}/signals`, `x-demo-operator-token`), never
+by the session being scored.
+
+Every payment needs an `Idempotency-Key` header: a retry with the same key returns the original decision
+instead of paying twice; the same key with a different payment gets 409. Scoring is serialised per user
+(Postgres advisory lock), so a parallel burst cannot slip past the velocity and running-total rules. Injected signals are recorded in the audit log (`DEMO_SIGNALS_SET`) and every
 decision is recorded as `RISK_DECISION` (score, band, reason codes; never the payee identifier).
 
 Privacy: payee identifiers are normalised (IFSC + account, lowercase UPI, +91 mobile) and stored only as
@@ -172,5 +196,57 @@ Client IP: `X-Forwarded-For` is honoured only when the request comes from a trus
 (`TRUSTED_PROXIES`: loopback and Docker's private range); otherwise it is ignored, so it cannot be spoofed.
 On a single laptop the "client" is still localhost; the fix matters once the app is deployed.
 
-Tests: 27 unit tests (normalisation, every rule and band, client IP), 20 API tests on Postgres, and
-`web/e2e/payments.e2e.mjs` (takeover → sandbox, coached → step-up, FRI, validation) in real Chrome.
+Tests: unit tests for normalisation, every rule and band, and client IP; API tests on Postgres; 21 red-team
+tests (`api/tests/test_redteam.py`); and `web/e2e/payments.e2e.mjs` in real Chrome (takeover → sandbox,
+coached → step-up, ₹1 test payment, FRI hidden from the customer, double-click, validation).
+
+## Phase 2 · Module 2b: behaviour model (part 1)
+
+The payment form records **timing only**: how long keys are held, the pause between keys, corrections,
+paste, time to fill the form, the pause before pressing send, and mouse speed. Key identities are used
+in the browser only to pair key-down with key-up; no key, character or text is sent or stored.
+
+- **Profile:** the user's last 50 **clean** samples (payments allowed with no coaching or takeover
+  signals). An attacker's typing during a takeover is stored but never trains the profile.
+- **Model:** robust z-score per feature (median and MAD), from 5 clean samples. Score = mean of the three
+  largest deviations, squashed to 0–1.
+- **Rule:** anomaly ≥ 0.4 adds 10 points, ≥ 0.6 adds 20. Behaviour never blocks a payment on its own.
+- **Missing data is not a free pass:** once a profile exists, a payment with no usable typing data
+  (all pasted, scripted, or a rejected payload) adds 10 points. Cost: users who paste everything pay it.
+- **Crafted payloads:** out-of-range or non-numeric values are rejected, not clamped, and never learned.
+
+### Evaluation: synthetic users only
+
+`python api/scripts/eval_behaviour.py 60` (reproducible). Thresholds were chosen on seed 11; this report uses seed 7.
+
+```
+Synthetic evaluation: 60 users, 20 genuine + 20 impostor attempts each, seed 7
+
+model              history    EER    at        anomaly >= 0.4              anomaly >= 0.6      
+                                              genuine      impostor       genuine      impostor
+robust-z                 5   7.8%  0.30          2.5%         83.1%          0.4%         61.1%
+robust-z                10   5.9%  0.26          0.2%         78.5%          0.0%         51.5%
+robust-z                19   6.4%  0.26          0.7%         81.3%          0.0%         54.2%
+robust-z                40   4.7%  0.25          0.0%         82.8%          0.0%         56.7%
+isolation-forest        20  13.7%  0.90         75.4%         99.3%         53.3%         98.5%
+isolation-forest        40  10.5%  0.93         73.1%         99.9%         52.0%         99.3%
+
+Thresholds 0.4 / 0.6 were chosen on a different seed (11) than this report (7).
+SYNTHETIC DATA ONLY. Real-world error rates need the volunteer study.
+```
+
+How to read it:
+- **The robust z-score is used, the Isolation Forest is not.** On this data the forest had about twice
+  the equal error rate and was badly calibrated (it flagged about half of genuine attempts at 0.6).
+  The synthetic users have independent, bell-shaped features, which favours the z-score; the forest's
+  advantage (combinations of features) can only show up on real data, so it is kept for re-evaluation.
+- **At the chosen thresholds**, roughly 0–2.5% of a user's own attempts are flagged at 0.4 and
+  50–60% of other people's attempts are flagged at 0.6.
+- **These are not real-world numbers.** Real typing is messier (fatigue, a new keyboard, a phone vs a
+  laptop). Real error rates need real people; that is the next part of 2b.
+
+### Limits (stated, not solved)
+- Client-side signals can be forged by an attacker who reads this code and scripts the browser. Banks
+  harden collection SDKs; this demo does not.
+- Five samples is a thin profile; early decisions are less reliable.
+- The profile is per user across devices; typing on a phone and on a laptop will differ.

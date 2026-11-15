@@ -78,6 +78,26 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS payments_user_idx ON payments(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS payments_user_payee_idx ON payments(user_id, payee_hash);
+-- 2a review fixes (ALTER so databases created by the first 2a release are upgraded in place).
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS idem_key TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS request_hash TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS response JSONB;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS payee_trusted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS coaching BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS trust_eligible BOOLEAN NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS payments_user_idem_idx ON payments(user_id, idem_key) WHERE idem_key IS NOT NULL;
+
+-- Slice 2b: behaviour samples (timing statistics only, never keys or text). Only clean samples
+-- (allowed, no coaching or takeover signals) train the user's profile.
+CREATE TABLE IF NOT EXISTS behaviour_samples (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    payment_id UUID REFERENCES payments(id) ON DELETE CASCADE,
+    features   JSONB NOT NULL,
+    clean      BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS behaviour_user_clean_idx ON behaviour_samples(user_id, clean, id DESC);
 
 -- Demo-only device and telecom signals for a session (the web demo cannot read SIM or call state).
 CREATE TABLE IF NOT EXISTS session_signals (

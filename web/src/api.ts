@@ -1,3 +1,4 @@
+import type { BehaviourSample } from "./behaviour";
 import {
   startAuthentication,
   startRegistration,
@@ -110,9 +111,26 @@ export type Band = "allow" | "step_up" | "sandbox";
 
 export interface Reason {
   code: string;
-  points: number;
   text: string;
   group: "TRANSACTION" | "DEVICE" | "COACHING" | "TELECOM";
+}
+
+export interface AnalystReason extends Reason {
+  points: number;
+}
+
+/** Only present when the server runs with SHOW_ANALYST_VIEW=1 (demo / fraud-ops). */
+export interface AnalystView {
+  score: number;
+  reasons: AnalystReason[];
+  takeoverSignals: boolean;
+  coachingSignals: boolean;
+  signals: {
+    consortium: string;
+    friCategory: string | null;
+    injected: DemoSignals | null;
+    behaviour: { model: string; samples: number; anomaly: number | null; enrolMin: number; note: string | null };
+  };
 }
 
 export interface Decision {
@@ -120,13 +138,11 @@ export interface Decision {
   status: "completed" | "held";
   payee: string;
   amount: string;
-  score: number;
   band: Band;
   reasons: Reason[];
-  takeoverSignals: boolean;
-  coachingSignals: boolean;
   engine: string;
-  signals: { consortium: string; friCategory: string | null; injected: DemoSignals | null };
+  replayed: boolean;
+  analyst?: AnalystView;
 }
 
 export interface PaymentRow {
@@ -134,10 +150,9 @@ export interface PaymentRow {
   payeeType: PayeeType;
   payee: string;
   amount: string;
-  score: number;
+  score?: number;
   band: Band;
   status: string;
-  reasonCodes: string[];
   createdAt: string;
 }
 
@@ -150,9 +165,25 @@ export interface DemoSignals {
   accessibilityServices: boolean;
 }
 
-export const scorePayment = (payeeType: PayeeType, payee: Record<string, string>, amount: string) =>
-  post<Decision>("/payments/score", { payeeType, payee, amount });
+/** idempotencyKey: one per payment attempt. Reuse it when retrying the same payment so it is never sent twice. */
+export const scorePayment = (
+  payeeType: PayeeType,
+  payee: Record<string, string>,
+  amount: string,
+  idempotencyKey: string,
+  behaviour: BehaviourSample | null,
+) =>
+  call<Decision>("/payments/score", {
+    method: "POST",
+    body: JSON.stringify({ payeeType, payee, amount, behaviour }),
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+  });
 export const listPayments = () => call<{ payments: PaymentRow[] }>("/payments");
-export const getSignals = () => call<DemoSignals>("/demo/signals");
-export const putSignals = (s: DemoSignals) => call<DemoSignals>("/demo/signals", { method: "PUT", body: JSON.stringify(s) });
-export const getDemoFri = () => call<{ mock: boolean; numbers: Record<string, string> }>("/demo/fri");
+
+const operatorHeaders = (token: string) => ({ "Content-Type": "application/json", "x-demo-operator-token": token });
+export const getSignals = (sessionId: string, token: string) =>
+  call<DemoSignals>(`/demo/sessions/${sessionId}/signals`, { headers: operatorHeaders(token) });
+export const putSignals = (sessionId: string, token: string, s: DemoSignals) =>
+  call<DemoSignals>(`/demo/sessions/${sessionId}/signals`, { method: "PUT", body: JSON.stringify(s), headers: operatorHeaders(token) });
+export const getDemoFri = (token: string) =>
+  call<{ mock: boolean; numbers: Record<string, string> }>("/demo/fri", { headers: operatorHeaders(token) });
