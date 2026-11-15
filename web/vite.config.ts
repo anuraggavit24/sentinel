@@ -12,6 +12,7 @@ export default defineConfig({
       "/api": {
         target: process.env.API_URL ?? "http://localhost:8000",
         changeOrigin: false,
+        xfwd: true, // adds X-Forwarded-For so the API sees the browser's address, not the proxy's
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },

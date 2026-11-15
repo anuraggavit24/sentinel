@@ -40,3 +40,31 @@ button.primary { background: #1f5eff; border-color: #1f5eff; color: #fff; paddin
 .badge { margin-left: 8px; font-size: 12px; background: #e8f0ff; color: #1f5eff; padding: 2px 8px; border-radius: 999px; }
 .error { color: #b42318; background: #fef3f2; padding: 10px 12px; border-radius: 8px; font-size: 14px; }
 .notice { color: #05603a; background: #ecfdf3; padding: 10px 12px; border-radius: 8px; font-size: 14px; }
+.stack { display: grid; gap: 4px; }
+select { padding: 10px 12px; border: 1px solid #cfd3d8; border-radius: 8px; font-size: 15px; background: #fff; }
+.two { display: grid; grid-template-columns: 1fr 1.4fr; gap: 12px; }
+.small { font-size: 13px; }
+.result { border: 1px solid #e3e5e8; border-radius: 10px; padding: 18px; border-left-width: 5px; }
+.result.band-allow { border-left-color: #12b76a; }
+.result.band-step_up { border-left-color: #f79009; }
+.result.band-sandbox { border-left-color: #d92d20; }
+.score { font-size: 34px; font-weight: 700; }
+.score span { font-size: 15px; color: #66707a; font-weight: 500; }
+.meter { height: 8px; background: #eef0f2; border-radius: 99px; overflow: hidden; margin: 10px 0 12px; }
+.meter div { height: 100%; background: linear-gradient(90deg, #12b76a, #f79009 50%, #d92d20); }
+.reasons { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; }
+.reasons li { font-size: 14px; }
+.pts { display: inline-block; min-width: 38px; font-weight: 700; color: #b42318; }
+.tag { font-size: 11px; color: #66707a; background: #f2f4f7; padding: 1px 6px; border-radius: 99px; margin-left: 6px; }
+.demo { background: #fafbfc; border: 1px dashed #cfd3d8; border-radius: 10px; padding: 16px; }
+.toggles { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 14px; }
+label.inline { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+label.check input { width: 16px; height: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eef0f2; }
+th { color: #66707a; font-weight: 500; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+.pill.band-allow { background: #ecfdf3; color: #05603a; }
+.pill.band-step_up { background: #fffaeb; color: #93370d; }
+.pill.band-sandbox { background: #fef3f2; color: #b42318; }
+.field { display: grid; gap: 6px; font-size: 14px; font-weight: 500; }

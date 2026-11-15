@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import SendMoney from "./SendMoney";
 import {
   addDevice,
   explain,
@@ -36,6 +37,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [page, setPage] = useState<"account" | "send">("send");
 
   const refresh = useCallback(async () => {
     try {
@@ -136,6 +138,19 @@ export default function App() {
         </button>
       </header>
 
+      <div className="tabs">
+        <button className={page === "send" ? "tab active" : "tab"} onClick={() => { setPage("send"); setNotice(null); setError(null); }} type="button">
+          Send money
+        </button>
+        <button className={page === "account" ? "tab active" : "tab"} onClick={() => { setPage("account"); setNotice(null); setError(null); }} type="button">
+          Passkeys and sessions
+        </button>
+      </div>
+
+      {page === "send" && <SendMoney />}
+
+      {page === "account" && (
+      <>
       <section>
         <div className="row">
           <h2>Your passkeys</h2>
@@ -199,6 +214,9 @@ export default function App() {
           ))}
         </ul>
       </section>
+
+      </>
+      )}
 
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}

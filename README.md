@@ -139,3 +139,38 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
 audit service, a failed sign-in does not burn its challenge, and registration still reveals taken usernames.
+
+## Phase 2 · Module 2a: explainable risk scoring for payments
+
+Every payment gets a score from 0 to 100, a band, and the reasons behind each point.
+
+| Band | Score | Meaning (Module 3 implements the action) |
+|---|---|---|
+| allow | 0–39 | Goes through |
+| step_up | 40+ | Passkey re-authentication, a warning, possibly a cooling-off delay |
+| sandbox | 70+ **and** a takeover signal (SIM swap or failed integrity) **on a new device** | Fake balance, no real money moves, fraud ops alerted |
+
+A coached customer (on a call, screen shared) can score 90 and still only get **step_up**: they are the
+real customer on their own device, so showing them a fake balance would be wrong.
+
+| Signal group | Signals | Source in this web demo |
+|---|---|---|
+| Transaction | new payee, amount vs your usual (median of completed payments), very large amount, night time (IST), rapid payments | real, from your payment history |
+| Telecom | payee mobile number's FRI category (also for mobile-number UPI IDs), recent SIM swap | FRI **mocked**; SIM swap **injected** |
+| Device | new device, failed integrity check, synced passkey on a new device | synced flag real (from the passkey); others **injected** |
+| Coaching | active call, screen sharing, accessibility service | **injected** (a browser cannot read these) |
+| Consortium | payee reported on the ledger | slice 2c |
+
+Engine `rules-v1`: weighted rules, not ML. Slice 2b adds behaviour models; the rules stay as the
+explainable safety net. Injected signals are recorded in the audit log (`DEMO_SIGNALS_SET`) and every
+decision is recorded as `RISK_DECISION` (score, band, reason codes; never the payee identifier).
+
+Privacy: payee identifiers are normalised (IFSC + account, lowercase UPI, +91 mobile) and stored only as
+an HMAC with the consortium key, the same hash the ledger uses, plus a masked display string.
+
+Client IP: `X-Forwarded-For` is honoured only when the request comes from a trusted proxy
+(`TRUSTED_PROXIES`: loopback and Docker's private range); otherwise it is ignored, so it cannot be spoofed.
+On a single laptop the "client" is still localhost; the fix matters once the app is deployed.
+
+Tests: 27 unit tests (normalisation, every rule and band, client IP), 20 API tests on Postgres, and
+`web/e2e/payments.e2e.mjs` (takeover → sandbox, coached → step-up, FRI, validation) in real Chrome.

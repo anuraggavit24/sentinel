@@ -29,7 +29,8 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from . import audit, db, settings
+from . import audit, db, payments, settings
+from .auth_deps import current_session, now, request_ip, token_hash
 
 
 @asynccontextmanager
@@ -41,7 +42,8 @@ async def lifespan(_: FastAPI):
     drainer.stop()
 
 
-app = FastAPI(title="Sentinel API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Sentinel API", version="0.3.0", lifespan=lifespan)
+app.include_router(payments.router)
 
 USERNAME_PATTERN = r"^[a-z0-9_.-]{3,32}$"
 
@@ -65,14 +67,6 @@ class CeremonyIn(BaseModel):
 
 
 # ---------------------------------------------------------------- helpers
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def token_hash(token: str) -> bytes:
-    return hashlib.sha256(token.encode()).digest()
-
 
 def options_json(options: Any) -> dict:
     return json.loads(options_to_json(options))
@@ -127,7 +121,7 @@ def start_session(conn, response: Response, request: Request, user_id: uuid.UUID
             user_id,
             cred_id,
             (request.headers.get("user-agent") or "")[:200],
-            request.client.host if request.client else None,
+            request_ip(request),
             now() + timedelta(hours=settings.SESSION_TTL_HOURS),
         ),
     )
@@ -142,26 +136,11 @@ def start_session(conn, response: Response, request: Request, user_id: uuid.UUID
     )
 
 
-def current_session(sentinel_session: Optional[str] = Cookie(default=None)) -> dict:
-    if not sentinel_session:
-        raise HTTPException(401, "Not signed in")
-    with db.connect() as conn:
-        row = conn.execute(
-            "SELECT s.id AS session_id, s.user_id, u.username, u.display_name, u.webauthn_user_id "
-            "FROM sessions s JOIN users u ON u.id = s.user_id "
-            "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND s.expires_at > now()",
-            (token_hash(sentinel_session),),
-        ).fetchone()
-    if row is None:
-        raise HTTPException(401, "Session expired or revoked")
-    return row
-
-
 def save_credential(conn, user_id: uuid.UUID, verified: Any, credential: dict, label: Optional[str]) -> None:
     transports = credential.get("response", {}).get("transports") or []
     conn.execute(
-        "INSERT INTO credentials (id, user_id, public_key, sign_count, transports, device_type, backed_up, label) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        "INSERT INTO credentials (id, user_id, public_key, sign_count, transports, device_type, backed_up, label, last_used_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())",  # registering is the first use
         (
             verified.credential_id,
             user_id,

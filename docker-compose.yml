@@ -42,6 +42,7 @@ services:
       RP_ORIGINS: http://localhost:5173
       AUDIT_URL: http://audit-api:8800
       AUDIT_STREAM: BankAMSP-auth
+      DEMO_SIGNALS: "1"  # demo only: enables the signal injector (SIM swap, new device, call...)
       AUDIT_TOKEN: "demo-audit-token-change-me"  # must match audit-api
     ports:
       - "127.0.0.1:8000:8000"

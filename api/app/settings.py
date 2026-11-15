@@ -14,3 +14,9 @@ AUDIT_STREAM = os.environ.get("AUDIT_STREAM", "BankAMSP-auth")
 # Shared secret the audit-log service requires on writes. Must match the audit service's AUDIT_TOKEN.
 AUDIT_TOKEN = os.environ.get("AUDIT_TOKEN", "")
 AUDIT_DRAIN_INTERVAL_SECONDS = float(os.environ.get("AUDIT_DRAIN_INTERVAL_SECONDS", "1.0"))
+# Proxies whose X-Forwarded-For header is believed: loopback and Docker's private ranges.
+TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "127.0.0.1/32,::1/128,172.16.0.0/12")
+# Same normalisation + key as the consortium ledger, so payee hashes match other banks' reports. Demo key.
+PAYEE_HMAC_KEY = os.environ.get("PAYEE_HMAC_KEY", "consortium-demo-key-v1")
+# Enables /demo/signals (SIM swap, new device, call, screen sharing...). Never on in production.
+DEMO_SIGNALS = os.environ.get("DEMO_SIGNALS", "0") == "1"

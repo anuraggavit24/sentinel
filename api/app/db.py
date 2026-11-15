@@ -58,6 +58,33 @@ CREATE TABLE IF NOT EXISTS sessions (
     revoked_at    TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+
+-- Module 2: every scored payment. Raw payee identifiers are never stored: only the keyed hash
+-- (same as the consortium ledger) and a masked display string.
+CREATE TABLE IF NOT EXISTS payments (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id    UUID REFERENCES sessions(id) ON DELETE SET NULL,
+    payee_type    TEXT NOT NULL,
+    payee_hash    TEXT NOT NULL,
+    payee_display TEXT NOT NULL,
+    amount_paise  BIGINT NOT NULL CHECK (amount_paise > 0),
+    score         INT NOT NULL,
+    band          TEXT NOT NULL CHECK (band IN ('allow', 'step_up', 'sandbox')),
+    status        TEXT NOT NULL CHECK (status IN ('completed', 'held')),
+    reasons       JSONB NOT NULL,
+    signals       JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS payments_user_idx ON payments(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS payments_user_payee_idx ON payments(user_id, payee_hash);
+
+-- Demo-only device and telecom signals for a session (the web demo cannot read SIM or call state).
+CREATE TABLE IF NOT EXISTS session_signals (
+    session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    signals    JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
