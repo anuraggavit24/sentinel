@@ -32,3 +32,30 @@ fablo up                      # first time, or after fablo down
 ```
 
 Uses Fabric 2.5.16 (2.5.15+ is required for Docker Engine 29).
+
+## Audit-log service (step 8)
+
+Each bank keeps an append-only log of its decisions in Postgres. Every entry stores the previous
+entry's hash and an Ed25519 signature. The bank anchors the chain head on the ledger with
+`anchorAuditRoot`, and `/verify` checks both the chain and the on-chain anchor.
+
+| Attack | Hash chain alone | With on-chain anchor |
+|---|---|---|
+| Edit a row directly in Postgres | caught (hash mismatch at that entry) | caught |
+| Insider with DB access **and** the signing key rewrites and re-signs | **not caught** | caught |
+
+```bash
+docker compose -f audit/docker-compose.yml up -d --build   # API on http://localhost:8800
+```
+
+Tests (unit tests always run; API tests need a Postgres via `DATABASE_URL`):
+
+```bash
+cd audit
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+`DEMO_INSIDER=1` enables `/demo/insider-rewrite` for the demo only. The signing seed in
+`docker-compose.yml` is a demo value; a real bank would keep the key in an HSM.

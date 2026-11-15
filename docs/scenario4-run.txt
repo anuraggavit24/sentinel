@@ -1,4 +1,4 @@
-Sentinel scenario 4 · run 1794731387
+Sentinel scenario 4 · run 1794731903
 
 ── 1. BankA reports a mule account (ANALYST)
    ✔ reportMule accepted
@@ -36,9 +36,19 @@ Sentinel scenario 4 · run 1794731387
    ✔ different IFSC: no reports
    ✔ lowercase/spaced input hashes the same
 
-── 8. Audit anchors are write-once (full tamper test arrives with the audit-log service)
-   ✔ anchor written
-   ✔ overwrite rejected
+── 8. Audit log: on-chain anchors expose tampering, even by an insider with the signing key
+   ✔ BankA anchors its log root on the ledger
+   ✔ anchor cannot be overwritten
+   ✔ untouched log: chain valid
+   ✔ untouched log: matches on-chain anchor
+   (edited entry 2 directly in Postgres)
+   ✔ DB edit: chain reported broken
+   ✔ DB edit: exact entry identified
+   ✔ DB edit: no longer matches anchor
+   ✔ BankB anchors its log root on the ledger
+   (insider rewrote entry 2 and re-signed every later entry)
+   ✔ insider rewrite: internal checks pass (hash chain alone is fooled)
+   ✔ insider rewrite: caught by the on-chain anchor
 
 ── 9. Dispute: BankC disputes the confirmed mule report, Regulator overturns
    ✔ dispute accepted
@@ -65,9 +75,9 @@ Sentinel scenario 4 · run 1794731387
    ✔ BankC caught up with the missed block
 
 ══════════════════════════════════════════════
- Result: 36 passed, 0 failed
- Commit latency (CLI, includes docker exec): p50 2267 ms · p95 2288 ms · n=11
- Query latency  (CLI, includes docker exec): p50 187 ms · p95 196 ms · n=13
+ Result: 44 passed, 0 failed
+ Commit latency (CLI, includes docker exec): p50 2283 ms · p95 2315 ms · n=12
+ Query latency  (CLI, includes docker exec): p50 201 ms · p95 236 ms · n=15
  Note: CLI numbers include container start-up overhead; true peer query latency is measured
        with the Gateway client in Phase 2. Commit time is dominated by the 2 s orderer BatchTimeout.
 ══════════════════════════════════════════════

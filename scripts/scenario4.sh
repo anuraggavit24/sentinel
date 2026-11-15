@@ -121,7 +121,7 @@ ensure_certs() {
   done
 }
 
-for tool in fablo jq openssl docker; do
+for tool in fablo jq openssl docker curl; do
   command -v "$tool" >/dev/null || { echo "Missing tool: $tool"; exit 1; }
 done
 ensure_certs
@@ -178,10 +178,56 @@ payee "$C" "$(idhash_account "SBIN0000456" "5010${RUN}")"
 check "different IFSC: no reports" "$(jq -r '.reports | length' <<<"$RESULT")" "0"
 check "lowercase/spaced input hashes the same" "$(idhash_account " hdfc0000123 " "5010 ${RUN}")" "$MULE"
 
-step "8. Audit anchors are write-once (full tamper test arrives with the audit-log service)"
-ANCHOR_DATE=$(date -d "+$((RUN % 3000)) days" +%Y-%m-%d)
-must "anchor written" inv "$A,$B" anchorAuditRoot "$ANCHOR_DATE" "$(sha "root-1-$RUN")"
-expect_reject "overwrite rejected" "cannot be overwritten" "$A,$B" anchorAuditRoot "$ANCHOR_DATE" "$(sha "root-2-$RUN")"
+step "8. Audit log: on-chain anchors expose tampering, even by an insider with the signing key"
+AUDIT="http://localhost:8800"
+if ! curl -sf "$AUDIT/health" >/dev/null 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "   ✘ audit service not reachable. Start it: docker compose -f audit/docker-compose.yml up -d --build"
+else
+  ANCHOR_DATE=$(date -d "+$((RUN % 36500)) days" +%Y-%m-%d)
+
+  audit_append() {  # audit_append <stream> <i> <decision>
+    curl -sf -X POST "$AUDIT/events" -H 'content-type: application/json' \
+      -d "$(jq -cn --arg s "$1" --argjson i "$2" --arg d "$3" \
+            '{stream:$s, eventType:"RISK_DECISION", payload:{session:("s-" + ($i|tostring)), score:($i * 17), decision:$d}}')" >/dev/null
+  }
+  audit_verify() { curl -sf "$AUDIT/streams/$1/verify?anchor=$2"; }
+
+  # 8a. BankA logs decisions and anchors its chain head on the ledger
+  STREAM_A="BankAMSP-run$RUN"
+  for i in 1 2 3 4 5; do audit_append "$STREAM_A" "$i" ALLOW; done
+  ROOT_A=$(curl -sf "$AUDIT/streams/$STREAM_A/root" | jq -r '.root')
+  must "BankA anchors its log root on the ledger" inv "$A,$B" anchorAuditRoot "$ANCHOR_DATE" "$ROOT_A"
+  expect_reject "anchor cannot be overwritten" "cannot be overwritten" "$A,$B" anchorAuditRoot "$ANCHOR_DATE" "$(sha "fake-root-$RUN")"
+  q "$C" getAnchor BankAMSP "$ANCHOR_DATE"
+  ONCHAIN_A=$(jq -r '.rootHash' <<<"$RESULT")
+  V=$(audit_verify "$STREAM_A" "$ONCHAIN_A")
+  check "untouched log: chain valid" "$(jq -r '.chainValid' <<<"$V")" "true"
+  check "untouched log: matches on-chain anchor" "$(jq -r '.anchorMatches' <<<"$V")" "true"
+
+  # 8b. Someone edits a row directly in Postgres (no signing key)
+  docker exec sentinel-audit-db psql -U audit -d audit -qc \
+    "UPDATE audit_log SET payload = replace(payload, 'ALLOW', 'BLOCK') WHERE stream = '$STREAM_A' AND idx = 2" >/dev/null
+  echo "   (edited entry 2 directly in Postgres)"
+  V=$(audit_verify "$STREAM_A" "$ONCHAIN_A")
+  check "DB edit: chain reported broken" "$(jq -r '.chainValid' <<<"$V")" "false"
+  check "DB edit: exact entry identified" "$(jq -r '.firstBadIdx' <<<"$V")" "2"
+  check "DB edit: no longer matches anchor" "$(jq -r '.anchorMatches' <<<"$V")" "false"
+
+  # 8c. An insider with DB access AND the signing key rewrites history and re-signs it
+  STREAM_B="BankBMSP-run$RUN"
+  for i in 1 2 3 4 5; do audit_append "$STREAM_B" "$i" ALLOW; done
+  ROOT_B=$(curl -sf "$AUDIT/streams/$STREAM_B/root" | jq -r '.root')
+  must "BankB anchors its log root on the ledger" inv "$B,$A" anchorAuditRoot "$ANCHOR_DATE" "$ROOT_B"
+  q "$C" getAnchor BankBMSP "$ANCHOR_DATE"
+  ONCHAIN_B=$(jq -r '.rootHash' <<<"$RESULT")
+  curl -sf -X POST "$AUDIT/demo/insider-rewrite" -H 'content-type: application/json' \
+    -d "$(jq -cn --arg s "$STREAM_B" '{stream:$s, idx:2, payload:{session:"s-3", score:51, decision:"BLOCK"}}')" >/dev/null
+  echo "   (insider rewrote entry 2 and re-signed every later entry)"
+  V=$(audit_verify "$STREAM_B" "$ONCHAIN_B")
+  check "insider rewrite: internal checks pass (hash chain alone is fooled)" "$(jq -r '.chainValid' <<<"$V")" "true"
+  check "insider rewrite: caught by the on-chain anchor" "$(jq -r '.anchorMatches' <<<"$V")" "false"
+fi
 
 step "9. Dispute: BankC disputes the confirmed mule report, Regulator overturns"
 must "dispute accepted" inv "$C,$A" disputeReport "$MULE_RID" "$(sha "reason-c-$RUN")"
