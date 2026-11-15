@@ -24,9 +24,10 @@ services:
     environment:
       DATABASE_URL: postgresql://sentinel:sentinel@db:5432/audit
       AUDIT_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"  # demo only
-      DEMO_INSIDER: "1"
+      AUDIT_TOKEN: "demo-audit-token-change-me"  # demo only; writes without it get 401
+      DEMO_INSIDER: "1"  # demo only: enables /demo/insider-rewrite (still needs the token)
     ports:
-      - "8800:8800"
+      - "127.0.0.1:8800:8800"  # this machine only, not your Wi-Fi network
     depends_on:
       db:
         condition: service_healthy
@@ -41,8 +42,9 @@ services:
       RP_ORIGINS: http://localhost:5173
       AUDIT_URL: http://audit-api:8800
       AUDIT_STREAM: BankAMSP-auth
+      AUDIT_TOKEN: "demo-audit-token-change-me"  # must match audit-api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy

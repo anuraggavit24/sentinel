@@ -11,10 +11,12 @@ pytestmark = pytest.mark.skipif("DATABASE_URL" not in os.environ, reason="needs 
 @pytest.fixture(scope="module")
 def client():
     os.environ["DEMO_INSIDER"] = "1"
+    os.environ.setdefault("AUDIT_ALLOW_UNAUTHENTICATED", "1")
     from fastapi.testclient import TestClient
     from app import main
 
     main.DEMO_INSIDER = True
+    main.ALLOW_UNAUTHENTICATED = True
     with TestClient(main.app) as c:
         yield c
 
@@ -62,3 +64,35 @@ def test_insider_rewrite_only_caught_by_anchor(client):
 def test_bad_stream_name_and_empty_stream(client):
     assert client.post("/events", json={"stream": "bad name!", "eventType": "X", "payload": {}}).status_code == 422
     assert client.get("/streams/nothing-here-123/root").status_code == 404
+
+
+def test_writes_require_the_token_when_configured(client, monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main, "AUDIT_TOKEN", "s3cret")
+    s = f"t-{uuid.uuid4().hex[:8]}"
+    event = {"stream": s, "eventType": "X", "payload": {"k": 1}}
+    assert client.post("/events", json=event).status_code == 401
+    assert client.post("/events", json=event, headers={"x-audit-token": "wrong"}).status_code == 401
+    assert client.post("/events", json=event, headers={"x-audit-token": "s3cret"}).status_code == 201
+    rewrite = {"stream": s, "idx": 0, "payload": {"k": 2}}
+    assert client.post("/demo/insider-rewrite", json=rewrite).status_code == 401
+
+
+def test_writes_are_refused_when_no_token_is_configured(client, monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main, "AUDIT_TOKEN", "")
+    monkeypatch.setattr(main, "ALLOW_UNAUTHENTICATED", False)
+    event = {"stream": "t-fail-closed", "eventType": "X", "payload": {}}
+    assert client.post("/events", json=event).status_code == 503
+
+
+def test_retried_delivery_with_same_idempotency_key_is_stored_once(client):
+    s = f"t-{uuid.uuid4().hex[:8]}"
+    event = {"stream": s, "eventType": "LOGIN_SUCCESS", "payload": {"u": 1}, "idempotencyKey": f"{s}:outbox:1"}
+    first = client.post("/events", json=event)
+    again = client.post("/events", json=event)
+    assert first.status_code == 201 and again.status_code == 200
+    assert again.json()["duplicate"] is True and again.json()["hash"] == first.json()["hash"]
+    assert client.get(f"/streams/{s}/root").json()["entries"] == 1

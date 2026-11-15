@@ -81,8 +81,11 @@ def init(timeout_seconds: int = 60) -> None:
     while True:
         try:
             ensure_database()
+            from .audit import OUTBOX_SCHEMA  # local import: audit imports db
+
             with connect() as conn:
                 conn.execute(SCHEMA)
+                conn.execute(OUTBOX_SCHEMA)
             return
         except psycopg.OperationalError:
             if time.time() > deadline:

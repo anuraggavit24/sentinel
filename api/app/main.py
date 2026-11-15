@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response
+import psycopg
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from webauthn import (
     generate_authentication_options,
@@ -34,7 +35,10 @@ from . import audit, db, settings
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
+    drainer = audit.Drainer()
+    drainer.start()
     yield
+    drainer.stop()
 
 
 app = FastAPI(title="Sentinel API", version="0.2.0", lifespan=lifespan)
@@ -50,7 +54,8 @@ class RegisterOptionsIn(BaseModel):
 
 
 class LoginOptionsIn(BaseModel):
-    username: str = Field(pattern=USERNAME_PATTERN)
+    # Optional: without a username the browser offers every passkey it holds for this site.
+    username: Optional[str] = Field(default=None, pattern=USERNAME_PATTERN)
 
 
 class CeremonyIn(BaseModel):
@@ -199,7 +204,7 @@ def register_options(body: RegisterOptionsIn) -> dict:
             user_display_name=body.displayName,
             timeout=settings.CHALLENGE_TTL_SECONDS * 1000,
             authenticator_selection=AuthenticatorSelectionCriteria(
-                resident_key=ResidentKeyRequirement.PREFERRED,
+                resident_key=ResidentKeyRequirement.REQUIRED,  # discoverable: login never lists credential ids
                 user_verification=UserVerificationRequirement.REQUIRED,
             ),
         )
@@ -215,19 +220,24 @@ def register_options(body: RegisterOptionsIn) -> dict:
 
 
 @app.post("/auth/register/verify")
-def register_verify(body: CeremonyIn, request: Request, response: Response, tasks: BackgroundTasks) -> dict:
-    with db.connect() as conn, conn.transaction():
-        row = consume_challenge(conn, body.challengeId, "register")
-        verified = verify_new_credential(row, body)
-        if conn.execute("SELECT 1 FROM users WHERE username = %s", (row["pending_username"],)).fetchone():
-            raise HTTPException(409, "Username was taken while you were registering")
-        user = conn.execute(
-            "INSERT INTO users (username, display_name, webauthn_user_id) VALUES (%s, %s, %s) RETURNING id, username",
-            (row["pending_username"], row["pending_display_name"], row["pending_webauthn_id"]),
-        ).fetchone()
-        save_credential(conn, user["id"], verified, body.credential, body.label)
-        start_session(conn, response, request, user["id"], verified.credential_id)
-    tasks.add_task(audit.send, "USER_REGISTERED", {"userId": str(user["id"]), "deviceType": verified.credential_device_type.value})
+def register_verify(body: CeremonyIn, request: Request, response: Response) -> dict:
+    try:
+        with db.connect() as conn, conn.transaction():
+            row = consume_challenge(conn, body.challengeId, "register")
+            verified = verify_new_credential(row, body)
+            user = conn.execute(
+                "INSERT INTO users (username, display_name, webauthn_user_id) VALUES (%s, %s, %s) RETURNING id, username",
+                (row["pending_username"], row["pending_display_name"], row["pending_webauthn_id"]),
+            ).fetchone()
+            save_credential(conn, user["id"], verified, body.credential, body.label)
+            start_session(conn, response, request, user["id"], verified.credential_id)
+            audit.enqueue(
+                conn, "USER_REGISTERED", {"userId": str(user["id"]), "deviceType": verified.credential_device_type.value}
+            )
+    except psycopg.errors.UniqueViolation as exc:
+        # Two sign-ups raced for the same username (or the passkey already exists). The UNIQUE
+        # constraint is the real guard; a pre-check would still leave a window between check and insert.
+        raise HTTPException(409, "Username was taken while you were registering") from exc
     return {"username": user["username"], "registered": True}
 
 
@@ -235,62 +245,94 @@ def register_verify(body: CeremonyIn, request: Request, response: Response, task
 
 @app.post("/auth/login/options")
 def login_options(body: LoginOptionsIn) -> dict:
+    """
+    Identical response for every caller: allowCredentials is always empty and the database is not
+    consulted. Listing a real user's credential ids (the old behaviour) told anyone which usernames
+    exist. Passkeys are discoverable, so the browser finds the right one without the list.
+    """
+    options = generate_authentication_options(
+        rp_id=settings.RP_ID,
+        allow_credentials=[],
+        user_verification=UserVerificationRequirement.REQUIRED,
+        timeout=settings.CHALLENGE_TTL_SECONDS * 1000,
+    )
     with db.connect() as conn:
-        user = conn.execute("SELECT id FROM users WHERE username = %s", (body.username,)).fetchone()
-        creds = []
-        if user:
-            creds = conn.execute("SELECT id, transports FROM credentials WHERE user_id = %s", (user["id"],)).fetchall()
-        # Unknown usernames get the same response shape (no credentials listed), so the endpoint
-        # does not reveal which usernames exist. The ceremony then fails at verify.
-        options = generate_authentication_options(
-            rp_id=settings.RP_ID,
-            allow_credentials=[descriptor(bytes(c["id"]), c["transports"]) for c in creds],
-            user_verification=UserVerificationRequirement.REQUIRED,
-            timeout=settings.CHALLENGE_TTL_SECONDS * 1000,
-        )
-        cid = new_challenge(conn, "login", options.challenge, user_id=user["id"] if user else None)
+        # The typed username (if any) is only remembered so verify can insist on it.
+        cid = new_challenge(conn, "login", options.challenge, pending_username=body.username)
     return {"challengeId": str(cid), "options": options_json(options)}
 
 
+def user_handle_matches(credential: dict, webauthn_user_id: bytes) -> bool:
+    """A discoverable passkey returns the user handle it was created with; it must be this account's."""
+    handle = (credential.get("response") or {}).get("userHandle")
+    if not handle:
+        return True  # optional in the spec; the credential id lookup already ties it to one account
+    try:
+        return base64url_to_bytes(handle) == webauthn_user_id
+    except Exception:  # noqa: BLE001 - malformed client input
+        return False
+
+
 @app.post("/auth/login/verify")
-def login_verify(body: CeremonyIn, request: Request, response: Response, tasks: BackgroundTasks) -> dict:
+def login_verify(body: CeremonyIn, request: Request, response: Response) -> dict:
     cred_id = credential_id_from(body.credential)
     with db.connect() as conn, conn.transaction():
         row = consume_challenge(conn, body.challengeId, "login")
         cred = conn.execute(
-            "SELECT c.*, u.username FROM credentials c JOIN users u ON u.id = c.user_id WHERE c.id = %s FOR UPDATE",
+            "SELECT c.*, u.username, u.webauthn_user_id FROM credentials c JOIN users u ON u.id = c.user_id "
+            "WHERE c.id = %s FOR UPDATE",
             (cred_id,),
         ).fetchone()
-        if cred is None or row["user_id"] is None or cred["user_id"] != row["user_id"]:
+        # Same error for every failure, so verify does not reveal which usernames exist either.
+        if (
+            cred is None
+            or (row["pending_username"] is not None and cred["username"] != row["pending_username"])
+            or not user_handle_matches(body.credential, bytes(cred["webauthn_user_id"]))
+        ):
             raise HTTPException(400, "Passkey not recognised for this account")
         try:
+            # py_webauthn checks the sign counter BEFORE the signature, so a forged response (any key,
+            # a known credential id, a low counter) would look like a cloned authenticator. Verify the
+            # signature with the counter check disabled (current = 0), then compare counters ourselves:
+            # a counter that goes backwards on a VALID signature is a real clone signal.
             verified = verify_authentication_response(
                 credential=body.credential,
                 expected_challenge=bytes(row["challenge"]),
                 expected_rp_id=settings.RP_ID,
                 expected_origin=settings.RP_ORIGINS,
                 credential_public_key=bytes(cred["public_key"]),
-                credential_current_sign_count=cred["sign_count"],
+                credential_current_sign_count=0,
                 require_user_verification=True,
             )
         except InvalidAuthenticationResponse as exc:
-            if "sign count" in str(exc).lower():
-                tasks.add_task(audit.send, "POSSIBLE_CLONED_AUTHENTICATOR", {"userId": str(cred["user_id"])})
-                raise HTTPException(400, "Sign counter went backwards: possible cloned authenticator") from exc
             raise HTTPException(400, f"Passkey sign-in failed: {exc}") from exc
+        stored = cred["sign_count"]
+        if (stored > 0 or verified.new_sign_count > 0) and verified.new_sign_count <= stored:
+            # The main transaction rolls back when we raise, so record this on its own connection.
+            audit.record_now(
+                "POSSIBLE_CLONED_AUTHENTICATOR",
+                {
+                    "userId": str(cred["user_id"]),
+                    "credentialId": bytes_to_base64url(cred_id),
+                    "storedCount": stored,
+                    "presentedCount": verified.new_sign_count,
+                },
+            )
+            raise HTTPException(400, "Sign counter went backwards: possible cloned authenticator")
         conn.execute(
             "UPDATE credentials SET sign_count = %s, last_used_at = now() WHERE id = %s",
             (verified.new_sign_count, cred_id),
         )
         start_session(conn, response, request, cred["user_id"], cred_id)
-    tasks.add_task(audit.send, "LOGIN_SUCCESS", {"userId": str(cred["user_id"])})
+        audit.enqueue(conn, "LOGIN_SUCCESS", {"userId": str(cred["user_id"])})
     return {"username": cred["username"], "signedIn": True}
 
 
 @app.post("/auth/logout")
 def logout(response: Response, session: dict = Depends(current_session)) -> dict:
-    with db.connect() as conn:
+    with db.connect() as conn, conn.transaction():
         conn.execute("UPDATE sessions SET revoked_at = now() WHERE id = %s", (session["session_id"],))
+        audit.enqueue(conn, "LOGOUT", {"userId": str(session["user_id"])})
     response.delete_cookie(settings.COOKIE_NAME, path="/")
     return {"signedOut": True}
 
@@ -351,7 +393,7 @@ def add_device_options(session: dict = Depends(current_session)) -> dict:
             timeout=settings.CHALLENGE_TTL_SECONDS * 1000,
             exclude_credentials=[descriptor(bytes(c["id"]), c["transports"]) for c in existing],
             authenticator_selection=AuthenticatorSelectionCriteria(
-                resident_key=ResidentKeyRequirement.PREFERRED,
+                resident_key=ResidentKeyRequirement.REQUIRED,  # discoverable: login never lists credential ids
                 user_verification=UserVerificationRequirement.REQUIRED,
             ),
         )
@@ -360,7 +402,7 @@ def add_device_options(session: dict = Depends(current_session)) -> dict:
 
 
 @app.post("/me/devices/verify")
-def add_device_verify(body: CeremonyIn, tasks: BackgroundTasks, session: dict = Depends(current_session)) -> dict:
+def add_device_verify(body: CeremonyIn, session: dict = Depends(current_session)) -> dict:
     with db.connect() as conn, conn.transaction():
         row = consume_challenge(conn, body.challengeId, "add_device")
         if row["user_id"] != session["user_id"]:
@@ -369,24 +411,27 @@ def add_device_verify(body: CeremonyIn, tasks: BackgroundTasks, session: dict = 
         if conn.execute("SELECT 1 FROM credentials WHERE id = %s", (verified.credential_id,)).fetchone():
             raise HTTPException(409, "This passkey is already registered")
         save_credential(conn, session["user_id"], verified, body.credential, body.label)
-    tasks.add_task(audit.send, "DEVICE_ADDED", {"userId": str(session["user_id"])})
+        audit.enqueue(conn, "DEVICE_ADDED", {"userId": str(session["user_id"])})
     return {"added": True}
 
 
 @app.delete("/me/devices/{device_id}")
-def remove_device(device_id: str, tasks: BackgroundTasks, session: dict = Depends(current_session)) -> dict:
+def remove_device(device_id: str, session: dict = Depends(current_session)) -> dict:
     try:
         cred_id = base64url_to_bytes(device_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, "Invalid device id") from exc
     with db.connect() as conn, conn.transaction():
-        count = conn.execute(
-            "SELECT count(*) AS n FROM credentials WHERE user_id = %s", (session["user_id"],)
-        ).fetchone()["n"]
-        owned = conn.execute(
-            "SELECT 1 FROM credentials WHERE id = %s AND user_id = %s", (cred_id, session["user_id"])
-        ).fetchone()
-        if not owned:
+        # Lock all of this user's passkeys first. Without the lock, two removals running at the same
+        # time both see "2 passkeys", each deletes one, and the account is left with none.
+        mine = [
+            bytes(r["id"])
+            for r in conn.execute(
+                "SELECT id FROM credentials WHERE user_id = %s ORDER BY id FOR UPDATE", (session["user_id"],)
+            ).fetchall()
+        ]
+        count = len(mine)
+        if cred_id not in mine:
             raise HTTPException(404, "Device not found")
         if count <= 1:
             raise HTTPException(409, "You cannot remove your only passkey; add another device first")
@@ -395,17 +440,19 @@ def remove_device(device_id: str, tasks: BackgroundTasks, session: dict = Depend
         conn.execute(
             "UPDATE sessions SET revoked_at = now() WHERE credential_id = %s AND revoked_at IS NULL", (cred_id,)
         )
-    tasks.add_task(audit.send, "DEVICE_REMOVED", {"userId": str(session["user_id"])})
+        audit.enqueue(conn, "DEVICE_REMOVED", {"userId": str(session["user_id"])})
     return {"removed": True}
 
 
 @app.delete("/me/sessions/{session_id}")
 def revoke_session(session_id: uuid.UUID, session: dict = Depends(current_session)) -> dict:
-    with db.connect() as conn:
+    with db.connect() as conn, conn.transaction():
         row = conn.execute(
             "UPDATE sessions SET revoked_at = now() WHERE id = %s AND user_id = %s AND revoked_at IS NULL RETURNING id",
             (session_id, session["user_id"]),
         ).fetchone()
+        if row is not None:
+            audit.enqueue(conn, "SESSION_REVOKED", {"userId": str(session["user_id"]), "sessionId": str(session_id)})
     if row is None:
         raise HTTPException(404, "Session not found")
     return {"revoked": True}
@@ -415,4 +462,4 @@ def revoke_session(session_id: uuid.UUID, session: dict = Depends(current_sessio
 def health() -> dict:
     with db.connect() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok"}
+    return {"status": "ok", "auditBacklog": audit.backlog()}

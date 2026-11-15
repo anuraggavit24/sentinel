@@ -11,3 +11,6 @@ COOKIE_NAME = "sentinel_session"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"  # set to 1 behind HTTPS
 AUDIT_URL = os.environ.get("AUDIT_URL", "")  # e.g. http://audit-api:8800 ; empty disables audit events
 AUDIT_STREAM = os.environ.get("AUDIT_STREAM", "BankAMSP-auth")
+# Shared secret the audit-log service requires on writes. Must match the audit service's AUDIT_TOKEN.
+AUDIT_TOKEN = os.environ.get("AUDIT_TOKEN", "")
+AUDIT_DRAIN_INTERVAL_SECONDS = float(os.environ.get("AUDIT_DRAIN_INTERVAL_SECONDS", "1.0"))

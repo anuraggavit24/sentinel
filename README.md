@@ -14,7 +14,7 @@ cd chaincode/fraudintel
 npm test
 ```
 
-23 tests, including attack tests:
+23 chaincode tests, including attack tests:
 - two-sandbox poisoning
 - one bank plus a sandbox capture
 - a dispute escalated through the Regulator
@@ -42,7 +42,12 @@ entry's hash and an Ed25519 signature. The bank anchors the chain head on the le
 | Attack | Hash chain alone | With on-chain anchor |
 |---|---|---|
 | Edit a row directly in Postgres | caught (hash mismatch at that entry) | caught |
-| Insider with DB access **and** the signing key rewrites and re-signs | **not caught** | caught |
+| Insider with DB access **and** the signing key rewrites and re-signs | **not caught** | caught, **for entries at or before the last anchor** |
+| Same insider rewrites entries added **after** the last anchor | not caught | **not caught** until the next anchor (anchor often) |
+
+Writes to the audit service need the `x-audit-token` header (`AUDIT_TOKEN`). The service signs whatever
+it is given, so without the token anyone who can reach the port could append forged entries that verify.
+Both services listen on `127.0.0.1` only.
 
 ```bash
 docker compose up -d --build   # from the repo root: Postgres, audit API (:8800), Sentinel API (:8000)
@@ -75,11 +80,26 @@ Security rules enforced (each one has a test):
 - Challenges are single use and expire after 5 minutes (replay is rejected).
 - The browser origin and relying-party ID must match (a phishing site's response is rejected).
 - User verification is required (fingerprint, face or PIN, not just a tap).
-- A sign counter that goes backwards is treated as a possibly cloned authenticator.
-- A passkey from another account cannot sign in to yours.
-- Unknown usernames get the same response as real ones, so usernames cannot be enumerated.
-- You cannot remove your only passkey; removing a passkey ends the sessions opened with it.
+- Passkeys are discoverable, so sign-in options never list credential IDs. The options are identical
+  for every caller, and sign-in works with or without typing a username.
+- A passkey from another account cannot sign in to yours (credential ID, typed username and user handle must all agree).
+- A sign counter that goes backwards is rejected as a possibly cloned authenticator, and the alert is
+  recorded even though the login fails. Synced passkeys (Google, Apple, Windows Hello) usually report a
+  counter of 0, which turns this check off; it mainly protects hardware security keys.
+- You cannot remove your only passkey, even with two removals racing (the user's passkeys are locked first).
+  Removing a passkey ends the sessions opened with it.
 - Session tokens are random, stored only as SHA-256 hashes, and sent in an httpOnly cookie.
+
+Known limit: **registration** still reveals whether a username is taken (it has to say "taken").
+Hiding that needs email or phone verification before sign-up.
+
+### Audit events: transactional outbox
+
+Every security event (registered, signed in, cloned authenticator, device added or removed, session revoked,
+logout) is written to `audit_outbox` **in the same database transaction** as the action. A background drainer
+forwards events to the audit-log service in order and retries while it is down. Events about rejected requests
+(cloned authenticator) are written on a separate connection so they survive the rollback.
+`GET /health` reports `auditBacklog`, the number of events not yet delivered.
 
 ### Run it
 
@@ -95,6 +115,27 @@ cd api && python3 -m venv .venv && . .venv/bin/activate && pip install -r requir
 DATABASE_URL=postgresql://sentinel:sentinel@localhost:5432/sentinel_test pytest -q   # needs Postgres
 ```
 
+24 API tests (ceremonies, replay, phishing origin, enumeration, clone alert, forged clone alert, removal race, outbox outage, idempotent delivery)
+and 13 audit-service tests.
+
 The tests use a software authenticator (`api/tests/soft_authenticator.py`) that produces real
 P-256 keys, CBOR and signatures, so every ceremony is verified exactly as a browser's would be.
 `web/e2e/passkey.e2e.mjs` drives the real UI in Chrome with a virtual authenticator.
+
+## Security review log
+
+Bugs found in review after Module 1 shipped, each with the test that proves the fix.
+
+| # | Bug | Impact | Fix | Test |
+|---|---|---|---|---|
+| 1 | Clone alert queued as a FastAPI background task, then the endpoint raised | Background tasks only run on a normal return, so the most important alert was **never recorded** | Transactional outbox; rejected-request events written on their own connection | `test_counter_rollback_flags_a_cloned_authenticator` (checks the event, not just the 400) |
+| 2 | Login options listed a real user's credential IDs and an unknown user's as empty | Anyone could tell which usernames exist from one request; the README claimed the opposite | Discoverable passkeys; login options identical for everyone, database not queried | enumeration test compares a real and an unknown user |
+| 3 | Audit service signed any write and was reachable on the network | Anyone on the same Wi-Fi could append forged, validly signed entries | `x-audit-token` (constant-time compare); ports bound to 127.0.0.1 | `test_writes_require_the_token_when_configured` |
+| 4 | Two concurrent passkey removals | Account left with zero passkeys (locked out) | Lock the user's passkeys `FOR UPDATE` first | removal race test (second connection holds the lock) |
+| 5 | py_webauthn checks the sign counter **before** the signature | A forged response (attacker's key, known credential ID, low counter) logged a "cloned authenticator" alert against an innocent user; in Module 2 that alert raises their risk score | Verify the signature first (counter check off), then compare counters ourselves | `test_forged_rollback_with_bad_signature_does_not_raise_a_clone_alert` |
+| 6 | Audit service with no `AUDIT_TOKEN` accepted unauthenticated writes | A forgotten setting silently opened the log | Fail closed: 503 unless `AUDIT_ALLOW_UNAUTHENTICATED=1` (tests only) | `test_writes_are_refused_when_no_token_is_configured` |
+| 7 | Outbox delivery was at-least-once with no deduplication | A crash after the audit service stored an event but before it was marked sent wrote the event **twice** into the hash chain | Stable `idempotencyKey` per outbox row; the audit service stores a repeat once | `test_retried_delivery_with_same_idempotency_key_is_stored_once`, `test_drainer_sends_a_stable_idempotency_key_per_event` |
+
+Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
+strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
+audit service, a failed sign-in does not burn its challenge, and registration still reveals taken usernames.

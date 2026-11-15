@@ -180,6 +180,7 @@ check "lowercase/spaced input hashes the same" "$(idhash_account " hdfc0000123 "
 
 step "8. Audit log: on-chain anchors expose tampering, even by an insider with the signing key"
 AUDIT="http://localhost:8800"
+AUDIT_TOKEN="${AUDIT_TOKEN:-demo-audit-token-change-me}"  # must match docker-compose.yml
 if ! curl -sf "$AUDIT/health" >/dev/null 2>&1; then
   FAIL=$((FAIL + 1))
   echo "   ✘ audit service not reachable. Start it: docker compose up -d --build"
@@ -187,7 +188,7 @@ else
   ANCHOR_DATE=$(date -d "+$((RUN % 36500)) days" +%Y-%m-%d)
 
   audit_append() {  # audit_append <stream> <i> <decision>
-    curl -sf -X POST "$AUDIT/events" -H 'content-type: application/json' \
+    curl -sf -X POST "$AUDIT/events" -H 'content-type: application/json' -H "x-audit-token: $AUDIT_TOKEN" \
       -d "$(jq -cn --arg s "$1" --argjson i "$2" --arg d "$3" \
             '{stream:$s, eventType:"RISK_DECISION", payload:{session:("s-" + ($i|tostring)), score:($i * 17), decision:$d}}')" >/dev/null
   }
@@ -221,7 +222,7 @@ else
   must "BankB anchors its log root on the ledger" inv "$B,$A" anchorAuditRoot "$ANCHOR_DATE" "$ROOT_B"
   q "$C" getAnchor BankBMSP "$ANCHOR_DATE"
   ONCHAIN_B=$(jq -r '.rootHash' <<<"$RESULT")
-  curl -sf -X POST "$AUDIT/demo/insider-rewrite" -H 'content-type: application/json' \
+  curl -sf -X POST "$AUDIT/demo/insider-rewrite" -H 'content-type: application/json' -H "x-audit-token: $AUDIT_TOKEN" \
     -d "$(jq -cn --arg s "$STREAM_B" '{stream:$s, idx:2, payload:{session:"s-3", score:51, decision:"BLOCK"}}')" >/dev/null
   echo "   (insider rewrote entry 2 and re-signed every later entry)"
   V=$(audit_verify "$STREAM_B" "$ONCHAIN_B")
