@@ -1,0 +1,73 @@
+Sentinel scenario 4 · run 1794731387
+
+── 1. BankA reports a mule account (ANALYST)
+   ✔ reportMule accepted
+   ✔ status is PENDING
+   ✔ reporter is BankAMSP
+
+── 2. BankA tries to confirm its own report
+   ✔ self-confirmation rejected
+
+── 3. BankB confirms with CUSTOMER_COMPLAINT
+   ✔ confirmReport accepted
+   ✔ status is CONFIRMED
+
+── 4. BankC looks up the payee from its own peer
+   ✔ weight is 1
+   ✔ hard rule eligible
+
+── 5. Poisoning: BankA sandbox-captures an innocent account
+   ✔ sandbox report accepted
+   ✔ severity capped at LOW
+   ✔ weight is 0
+
+── 6. Two-sandbox attack: BankB confirms as SANDBOX_CAPTURE
+   ✔ confirm accepted
+   ✔ still PENDING
+   ✔ weight still 0
+
+── 6b. One honest bank cannot blacklist: BankC confirms as ANALYST
+   ✔ confirm accepted
+   ✔ still PENDING
+   ✔ weight 0.25
+   ✔ hard rule NOT eligible
+
+── 7. Same digits, different bank (IFSC) do not match; messy input normalises
+   ✔ different IFSC: no reports
+   ✔ lowercase/spaced input hashes the same
+
+── 8. Audit anchors are write-once (full tamper test arrives with the audit-log service)
+   ✔ anchor written
+   ✔ overwrite rejected
+
+── 9. Dispute: BankC disputes the confirmed mule report, Regulator overturns
+   ✔ dispute accepted
+   ✔ weight halves to 0.5
+   ✔ hard rule stops firing
+   ✔ Regulator ruling accepted
+   ✔ weight drops to 0
+   ✔ full history kept
+
+── 10. The referee's limits: Regulator cannot report or confirm
+   ✔ Regulator reportMule rejected
+   ✔ Regulator confirmReport rejected
+
+── 11. Even the referee cannot bypass the 2-bank rule: dispute + UPHELD never promotes
+   ✔ BankB disputes the innocent report
+   ✔ Regulator upholds it
+   ✔ status restored to PENDING, not CONFIRMED
+   ✔ hard rule NOT eligible
+
+── Chaos: stop BankC's peer, keep committing with BankA + BankB
+   BankC peer stopped
+   ✔ report commits with BankC down
+   BankC peer restarted, waiting for it to catch up
+   ✔ BankC caught up with the missed block
+
+══════════════════════════════════════════════
+ Result: 36 passed, 0 failed
+ Commit latency (CLI, includes docker exec): p50 2267 ms · p95 2288 ms · n=11
+ Query latency  (CLI, includes docker exec): p50 187 ms · p95 196 ms · n=13
+ Note: CLI numbers include container start-up overhead; true peer query latency is measured
+       with the Gateway client in Phase 2. Commit time is dominated by the 2 s orderer BatchTimeout.
+══════════════════════════════════════════════
