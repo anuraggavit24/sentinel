@@ -107,8 +107,9 @@ export class FakeStub {
     return iter(rows);
   }
 
+  /** Fabric returns key history newest first, so the stub does too. */
   async getHistoryForKey(key: string) {
-    return iter([...(this.history.get(key) ?? [])]);
+    return iter([...(this.history.get(key) ?? [])].reverse());
   }
 
   rawState(key: string): Buffer | undefined {

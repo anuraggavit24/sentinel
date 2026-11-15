@@ -20,7 +20,8 @@ OUT=""
 TXID=""
 RESULT=""
 
-ms() { date +%s%3N; }
+# Milliseconds from bash's built-in clock (portable; some newer `date` builds ignore %3N).
+ms() { local t=${EPOCHREALTIME//[.,]/}; echo $((t / 1000)); }
 sha() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 
 # Off-chain identifier normalisation + keyed hash (spec: IFSC + account, uppercase, no spaces).

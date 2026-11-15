@@ -22,3 +22,13 @@ npm test
 
 The test stub mirrors Fabric's commit model: reads never see uncommitted writes,
 and a failed transaction leaves no writes behind.
+
+## Scenario 4 on the live network
+
+```bash
+cd ~/sentinel
+fablo up                      # first time, or after fablo down
+./scripts/scenario4.sh        # report, confirm, poisoning, disputes, referee limits, chaos test
+```
+
+Uses Fabric 2.5.16 (2.5.15+ is required for Docker Engine 29).

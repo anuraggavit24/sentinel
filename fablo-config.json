@@ -41,7 +41,7 @@
   "chaincodes": [
     {
       "name": "fraudintel",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "lang": "node",
       "channel": "fraud-intel",
       "directory": "./chaincode/fraudintel",

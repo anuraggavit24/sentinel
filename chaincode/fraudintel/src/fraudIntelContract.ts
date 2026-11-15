@@ -339,7 +339,12 @@ export class FraudIntelContract extends Contract {
       await iterator.close();
     }
     if (entries.length === 0) throw new Error(`Report ${reportId} does not exist`);
-    return toJson({ reportId, entries });
+    // Fabric returns key history newest first. Return it oldest first (chronological) regardless,
+    // sorting by transaction time with the transaction ID as a deterministic tie-breaker.
+    const ordered = (entries as Array<{ txId: string; txTime: string }>).sort((x, y) =>
+      x.txTime === y.txTime ? (x.txId < y.txId ? -1 : x.txId > y.txId ? 1 : 0) : x.txTime < y.txTime ? -1 : 1,
+    );
+    return toJson({ reportId, entries: ordered });
   }
 
   /** Stats are computed at query time with a CouchDB rich query. No counter keys, so no MVCC hot spots. */
