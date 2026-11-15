@@ -182,7 +182,7 @@ step "8. Audit log: on-chain anchors expose tampering, even by an insider with t
 AUDIT="http://localhost:8800"
 if ! curl -sf "$AUDIT/health" >/dev/null 2>&1; then
   FAIL=$((FAIL + 1))
-  echo "   ✘ audit service not reachable. Start it: docker compose -f audit/docker-compose.yml up -d --build"
+  echo "   ✘ audit service not reachable. Start it: docker compose up -d --build"
 else
   ANCHOR_DATE=$(date -d "+$((RUN % 36500)) days" +%Y-%m-%d)
 
@@ -206,7 +206,7 @@ else
   check "untouched log: matches on-chain anchor" "$(jq -r '.anchorMatches' <<<"$V")" "true"
 
   # 8b. Someone edits a row directly in Postgres (no signing key)
-  docker exec sentinel-audit-db psql -U audit -d audit -qc \
+  docker exec sentinel-db psql -U sentinel -d audit -qc \
     "UPDATE audit_log SET payload = replace(payload, 'ALLOW', 'BLOCK') WHERE stream = '$STREAM_A' AND idx = 2" >/dev/null
   echo "   (edited entry 2 directly in Postgres)"
   V=$(audit_verify "$STREAM_A" "$ONCHAIN_A")

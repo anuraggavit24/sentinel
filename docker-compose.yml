@@ -1,0 +1,54 @@
+# Sentinel off-chain services. The Fabric network is managed separately by Fablo (fablo up).
+# Start:  docker compose up -d --build      Stop:  docker compose down
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: sentinel-db
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    volumes:
+      - sentinel-db:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 256m
+
+  audit-api:
+    build: ./audit
+    container_name: sentinel-audit-api
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel@db:5432/audit
+      AUDIT_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111"  # demo only
+      DEMO_INSIDER: "1"
+    ports:
+      - "8800:8800"
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 256m
+
+  api:
+    build: ./api
+    container_name: sentinel-api
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel@db:5432/sentinel
+      RP_ID: localhost
+      RP_ORIGINS: http://localhost:5173
+      AUDIT_URL: http://audit-api:8800
+      AUDIT_STREAM: BankAMSP-auth
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      audit-api:
+        condition: service_started
+    mem_limit: 256m
+
+volumes:
+  sentinel-db:
