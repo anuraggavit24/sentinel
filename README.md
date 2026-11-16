@@ -165,6 +165,14 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 33 | Confirmed mule paid automatically | If points were ever tuned down, a confirmed mule could fall below the step-up line | A confirmed report forces step-up regardless of score | `test_confirmed_mule_is_held_even_from_a_trusted_payee` |
 | 34 | Gateway key file permissions | First version ran the gateway as root with all capabilities dropped; without `CAP_DAC_OVERRIDE` root cannot read another user's mode-600 key, so every lookup failed (found in the first live run). It also hid the reason as "ledger call failed" | Runs as the key owner (uid 1000), read-only mount and filesystem, no capabilities; every setup failure now names the file and cause, and is logged; the smoke script checks the owner | `fabric.test.ts`: unreadable key and permission denied (run as non-root), `server.test.ts`: unexpected error keeps its message and is logged |
 | 35 | One peer's word | An evaluate reads one peer; a compromised BankA peer could hide a report | **Not fixed.** Module 3 can cross-check a second organisation's peer for high-value payments | — |
+| 36 | A stolen analyst cookie releasing money | The queue is visible with the role, but every decision needs a fresh passkey check on that session (10 min); another session of the same analyst is not elevated | Elevation per session; user verification required | `test_deciding_needs_a_fresh_passkey_check`, `test_elevation_is_per_session`, `test_elevation_expires` |
+| 37 | Analyst approves their own payment | Separation of duties | Own payments are hidden from the queue and refused by the API | `test_nobody_reviews_their_own_payment`, `ops.e2e.mjs` |
+| 38 | Two analysts (or a double click) decide one payment | Money released and rejected at once | Payment row locked; second decision gets 409 | `test_a_payment_is_decided_once` |
+| 39 | Granting yourself the analyst role | Role escalation | Only the operator token grants it; removing the role ends elevation everywhere | `test_only_the_operator_grants_the_role`, `test_removing_the_role_ends_elevation` |
+| 40 | Ledger writes lost or duplicated | A filing lost when the ledger is down; a retry filing a second report | Outbox with a lease and backoff; every attempt first asks the ledger; our active report means "already ours"; another bank's means confirm, not duplicate | `test_a_ledger_outage_is_retried_with_backoff_then_failed_and_audited`, `test_our_own_active_report_means_nothing_to_write`, `test_another_banks_report_is_confirmed_not_duplicated`, `test_a_claimed_row_is_not_sent_twice` |
+| 41 | Customer data on a shared ledger | Other banks (and the Regulator) read the ledger | The case record stays in our database; only its SHA-256 goes on the ledger as evidence | `test_reject_and_report_files_a_new_report_with_the_payees_hash` |
+| 42 | A read credential that can write | A leaked read token filing reports | Separate `LEDGER_WRITE_TOKEN`; without it the write routes do not exist | `ledger-gateway/test/writes.test.ts` |
+| 43 | An invalid transaction counted as filed | A commit rejected by the peers (e.g. a read conflict) | `CommitError` is checked first and retried, never reported as success | `fabric.test.ts`: transaction marked invalid |
 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
@@ -440,4 +448,75 @@ First live run found row 34 (key permissions); fixed. **Run `ledger_smoke.sh` be
 - A query reads one peer (row 35).
 - "Reported" is visible to whoever makes a payment (row 30).
 - The ledger only knows what banks file. Module 3 adds filing from the fraud-ops dashboard.
+
+## Phase 3 · Module 3a: fraud operations, and the app's first ledger writes
+
+Held payments now go to a review queue. An analyst releases or rejects them, and can report the payee
+to the consortium. That report is a **write to the Fabric ledger**, endorsed by two banks.
+
+```
+analyst (passkey-verified) ──▶ decision ──▶ payments row + ledger_outbox row (one transaction)
+                                                  │
+                         background drainer ──────┘──▶ ledger-gateway ──▶ reportMule / confirmReport
+                                                                          (Gateway collects 2-bank endorsement)
+```
+
+- **Analysts** are ordinary passkey users given the `analyst` role by the operator. The **Fraud ops** tab
+  shows held payments (oldest first) with the full reasons, the ledger result, and how many *other*
+  customers tried the same payee in 7 days (itself a mule signal).
+- **Every decision needs a fresh passkey check** on that session, valid 10 minutes.
+- **Release** completes the payment (the money counts as sent, but the payee does not become trusted).
+  **Reject** stops it. **Reject and report** also queues a ledger filing.
+- **What gets written**, decided at send time from what the ledger already holds:
+
+| Ledger already has | We write | Result |
+|---|---|---|
+| Nothing active | `reportMule` (source ANALYST, chosen severity) | new PENDING report, weight 0.25 |
+| An active report by another bank | `confirmReport` on it | with two real banks: CONFIRMED |
+| An active report by us | nothing | `already_ours` |
+
+- **Evidence:** the case record (payment id, decision, note, reason codes, score, analyst, time) stays in
+  our database; the ledger gets its SHA-256. The bank can later prove what a report was based on
+  without putting customer data on a shared ledger.
+- The customer's history shows "Released after review" or "Stopped after review".
+
+### Run it
+
+```bash
+docker compose up -d --build                 # new: write token for the gateway and the API
+./scripts/ops_smoke.sh                       # live Fabric writes: new report, already ours, confirm -> CONFIRMED
+```
+
+Make yourself an analyst (sign up in the app first):
+
+```bash
+curl -s -X POST localhost:8000/ops/analysts -H "x-demo-operator-token: demo-operator-token-change-me" \
+     -H 'content-type: application/json' -d '{"username": "<your username>"}'
+```
+
+Reload the app: a **Fraud ops** tab appears. Use a second browser profile as the customer (an analyst
+cannot review their own payments): send ₹60,000 to a new UPI ID, then review it as the analyst.
+
+Browser tests (Vite running in another tab):
+
+```bash
+cd web && npm install && npx playwright install chromium   # once
+npm run e2e                                                 # passkey, payments, behaviour, study, ops
+LEDGER_UPI=<confirmed UPI from ledger_smoke.sh> npm run e2e:ledger
+```
+
+### How it is tested
+
+| Layer | What | Proves |
+|---|---|---|
+| Gateway writes ↔ Fabric | `fabric.test.ts`: the real adapter against a fake peer implementing Endorse / Submit / CommitStatus over TLS | Arguments in chaincode order; proposal **and** transaction envelope signed by the identity's key; result read from the prepared transaction; an invalid commit is a retryable error; an endorsement refusal keeps its message |
+| Gateway HTTP | `writes.test.ts` | Separate write token; read token gets 403; validation before Fabric; 422 for chaincode refusals |
+| API | `test_ops.py` (27) | Roles, elevation, separation of duties, single decision, release/reject effects, the outbox: report / confirm / already ours / race / outage / refusal / lease |
+| Browser | `ops.e2e.mjs` (two people, two passkeys) | Queue, passkey gate, reject + report with the filing reaching the ledger, release, customer's view, own payment hidden |
+| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement. **Not yet run by me**: the main risk is endorsement discovery (the Gateway must find a second bank's peer by itself) |
+
+### Not in 3a (next: 3b)
+- The customer's own step-up (confirm a held payment with a passkey and a "were you asked to do this?" check).
+- The sandbox (a fake balance for a suspected account takeover).
+- Disputing or retracting reports from the dashboard.
 

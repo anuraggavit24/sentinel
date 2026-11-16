@@ -40,6 +40,77 @@ function makeCerts(): void {
     '-out', 'msp/signcerts/User1@banka.example.com-cert.pem');
 }
 
+let commitCode = 0; // peer.TxValidationCode: 0 VALID, 11 MVCC_READ_CONFLICT
+const writes: { args: string[]; signatureValid: boolean; envelopeSigned: boolean }[] = [];
+
+function decode(signed: peer.SignedProposal): { channel: string; chaincode: string; args: string[]; signatureValid: boolean } {
+  const proposalBytes = signed.getProposalBytes_asU8();
+  const userCert = fs.readFileSync(path.join(dir, 'msp/signcerts/User1@banka.example.com-cert.pem'));
+  const signatureValid = crypto.verify('sha256', proposalBytes, { key: crypto.createPublicKey(userCert), dsaEncoding: 'der' },
+    signed.getSignature_asU8());
+  const proposal = peer.Proposal.deserializeBinary(proposalBytes);
+  const header = common.Header.deserializeBinary(proposal.getHeader_asU8());
+  const channel = common.ChannelHeader.deserializeBinary(header.getChannelHeader_asU8()).getChannelId();
+  const payload = peer.ChaincodeProposalPayload.deserializeBinary(proposal.getPayload_asU8());
+  const spec = peer.ChaincodeInvocationSpec.deserializeBinary(payload.getInput_asU8()).getChaincodeSpec()!;
+  const args = spec.getInput()!.getArgsList_asU8().map((a) => Buffer.from(a).toString('utf8'));
+  return { channel, chaincode: spec.getChaincodeId()!.getName(), args, signatureValid };
+}
+
+/** A prepared transaction whose chaincode result is `result`, nested the way Fabric nests it. */
+function preparedEnvelope(result: string): common.Envelope {
+  const response = new peer.Response();
+  response.setStatus(200);
+  response.setPayload(Buffer.from(result));
+  const ccAction = new peer.ChaincodeAction();
+  ccAction.setResponse(response);
+  const prp = new peer.ProposalResponsePayload();
+  prp.setExtension$(ccAction.serializeBinary());
+  const endorsed = new peer.ChaincodeEndorsedAction();
+  endorsed.setProposalResponsePayload(prp.serializeBinary());
+  const cap = new peer.ChaincodeActionPayload();
+  cap.setAction(endorsed);
+  const action = new peer.TransactionAction();
+  action.setPayload(cap.serializeBinary());
+  const tx = new peer.Transaction();
+  tx.setActionsList([action]);
+  const payload = new common.Payload();
+  payload.setHeader(new common.Header());
+  payload.setData(tx.serializeBinary());
+  const env = new common.Envelope();
+  env.setPayload(payload.serializeBinary());
+  return env;
+}
+
+function endorse(call: grpc.ServerUnaryCall<gateway.EndorseRequest, gateway.EndorseResponse>,
+  cb: grpc.sendUnaryData<gateway.EndorseResponse>): void {
+  const d = decode(call.request.getProposedTransaction()!);
+  writes.push({ args: d.args, signatureValid: d.signatureValid, envelopeSigned: false });
+  if (d.args[0] === 'reportMule' && d.args[1] === 'f'.repeat(64)) {
+    cb({ code: grpc.status.ABORTED, details: 'failed to endorse: Active report r1 already exists for this identifier; confirm or dispute it instead' });
+    return;
+  }
+  const res = new gateway.EndorseResponse();
+  res.setPreparedTransaction(preparedEnvelope(JSON.stringify({ reportId: 'tx-' + d.args[0], status: 'PENDING' })));
+  cb(null, res);
+}
+
+function submit(call: grpc.ServerUnaryCall<gateway.SubmitRequest, gateway.SubmitResponse>,
+  cb: grpc.sendUnaryData<gateway.SubmitResponse>): void {
+  const env = call.request.getPreparedTransaction()!;
+  const userCert = fs.readFileSync(path.join(dir, 'msp/signcerts/User1@banka.example.com-cert.pem'));
+  writes.at(-1)!.envelopeSigned = crypto.verify('sha256', env.getPayload_asU8(),
+    { key: crypto.createPublicKey(userCert), dsaEncoding: 'der' }, env.getSignature_asU8());
+  cb(null, new gateway.SubmitResponse());
+}
+
+function commitStatus(_call: unknown, cb: grpc.sendUnaryData<gateway.CommitStatusResponse>): void {
+  const res = new gateway.CommitStatusResponse();
+  res.setResult(commitCode as 0);
+  res.setBlockNumber(7);
+  cb(null, res);
+}
+
 function evaluate(call: grpc.ServerUnaryCall<gateway.EvaluateRequest, gateway.EvaluateResponse>,
   cb: grpc.sendUnaryData<gateway.EvaluateResponse>): void {
   const signed = call.request.getProposedTransaction()!;
@@ -79,7 +150,7 @@ const unimplemented = (_call: unknown, cb: grpc.sendUnaryData<never>) => cb({ co
 before(async () => {
   makeCerts();
   server.addService(gateway.GatewayService, {
-    evaluate, endorse: unimplemented, submit: unimplemented, commitStatus: unimplemented,
+    evaluate, endorse, submit, commitStatus,
     chaincodeEvents: (call: grpc.ServerWritableStream<unknown, unknown>) => call.end(),
   });
   const creds = grpc.ServerCredentials.createSsl(null, [{
@@ -94,7 +165,7 @@ after(() => {
 });
 
 const config = (over: Partial<Config> = {}): Config => ({
-  port: 0, token: 'x'.repeat(16), mspId: 'BankAMSP',
+  port: 0, token: 'x'.repeat(16), writeToken: '', submitTimeoutMs: 2000, mspId: 'BankAMSP',
   peerEndpoint: `127.0.0.1:${port}`, peerHostAlias: 'peer0.banka.example.com',
   tlsCertPath: path.join(dir, 'ca.crt'), mspDir: path.join(dir, 'msp'),
   channel: 'fraud-intel', chaincode: 'fraudintel', timeoutMs: 500, ...over,
@@ -195,5 +266,34 @@ test("Fablo's key file name (priv-key.pem) works", async () => {
   mode = 'ok';
   const ledger = new FabricLedger(config({ mspDir: mspCopy('msp-fablo-names', {}) }));
   assert.equal(JSON.parse(await ledger.ping()).msp, 'BankAMSP');
+  ledger.close();
+});
+
+test('a write is endorsed, signed twice (proposal and envelope), submitted and committed', async () => {
+  commitCode = 0;
+  const ledger = new FabricLedger(config());
+  const args = ['a'.repeat(64), 'UPI', 'b'.repeat(64), 'ANALYST', 'HIGH'];
+  const out = JSON.parse(await ledger.submit('reportMule', args));
+  ledger.close();
+  assert.equal(out.reportId, 'tx-reportMule');      // the chaincode's result, read from the prepared transaction
+  const w = writes.at(-1)!;
+  assert.deepEqual(w.args, ['reportMule', ...args]);
+  assert.equal(w.signatureValid, true, 'proposal signed with the keystore key');
+  assert.equal(w.envelopeSigned, true, 'transaction envelope signed with the keystore key');
+});
+
+test('a transaction the peers mark invalid is a commit error (retryable), not success', async () => {
+  commitCode = 11; // MVCC_READ_CONFLICT
+  const ledger = new FabricLedger(config());
+  await assert.rejects(ledger.submit('confirmReport', ['c'.repeat(64), 'd'.repeat(64), 'ANALYST']),
+    (e: LedgerError) => e.kind === 'commit' && e.message.includes('validation code 11'));
+  ledger.close();
+  commitCode = 0;
+});
+
+test('a chaincode refusal at endorsement keeps its message', async () => {
+  const ledger = new FabricLedger(config());
+  await assert.rejects(ledger.submit('reportMule', ['f'.repeat(64), 'UPI', 'b'.repeat(64), 'ANALYST', 'HIGH']),
+    (e: LedgerError) => e.kind === 'chaincode' && /already exists/.test(e.message));
   ledger.close();
 });

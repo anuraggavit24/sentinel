@@ -13,12 +13,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
-from webauthn import generate_authentication_options, verify_authentication_response
-from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
-from webauthn.helpers.exceptions import InvalidAuthenticationResponse
-from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
-from . import audit, db, settings
+from . import audit, db, reauth
 from .auth_deps import current_session, now
 from .risk import behaviour as bh
 
@@ -66,57 +62,14 @@ def profile(session: dict = Depends(current_session)) -> dict:
 
 @router.post("/behaviour/enrol/options")
 def enrol_options(session: dict = Depends(current_session)) -> dict:
-    """Passkey re-check. Listing this user's own credentials is fine: they are already signed in."""
-    from .main import new_challenge, options_json  # local import: main includes this router
-
     with db.connect() as conn:
-        creds = conn.execute("SELECT id FROM credentials WHERE user_id = %s", (session["user_id"],)).fetchall()
-        options = generate_authentication_options(
-            rp_id=settings.RP_ID,
-            allow_credentials=[PublicKeyCredentialDescriptor(id=bytes(c["id"])) for c in creds],
-            user_verification=UserVerificationRequirement.REQUIRED,
-            timeout=settings.CHALLENGE_TTL_SECONDS * 1000,
-        )
-        cid = new_challenge(conn, "reauth", options.challenge, user_id=session["user_id"])
-    return {"challengeId": str(cid), "options": options_json(options)}
+        return reauth.options(conn, session)
 
 
 @router.post("/behaviour/enrol/start")
 def enrol_start(body: StartIn, session: dict = Depends(current_session)) -> dict:
-    from .main import consume_challenge, credential_id_from
-
-    cred_id = credential_id_from(body.credential)
     with db.connect() as conn, conn.transaction():
-        row = consume_challenge(conn, body.challengeId, "reauth")
-        if row["user_id"] != session["user_id"]:
-            raise HTTPException(400, "This passkey check belongs to another account")
-        cred = conn.execute(
-            "SELECT * FROM credentials WHERE id = %s AND user_id = %s FOR UPDATE", (cred_id, session["user_id"])
-        ).fetchone()
-        if cred is None:
-            raise HTTPException(400, "Passkey not recognised for this account")
-        try:
-            # Signature first (counter check disabled), then our own counter comparison: same as sign-in.
-            verified = verify_authentication_response(
-                credential=body.credential,
-                expected_challenge=bytes(row["challenge"]),
-                expected_rp_id=settings.RP_ID,
-                expected_origin=settings.RP_ORIGINS,
-                credential_public_key=bytes(cred["public_key"]),
-                credential_current_sign_count=0,
-                require_user_verification=True,
-            )
-        except InvalidAuthenticationResponse as exc:
-            raise HTTPException(400, f"Passkey check failed: {exc}") from exc
-        stored = cred["sign_count"]
-        if (stored > 0 or verified.new_sign_count > 0) and verified.new_sign_count <= stored:
-            audit.record_now(
-                "POSSIBLE_CLONED_AUTHENTICATOR",
-                {"userId": str(session["user_id"]), "credentialId": bytes_to_base64url(cred_id), "during": "enrolment"},
-            )
-            raise HTTPException(400, "Sign counter went backwards: possible cloned authenticator")
-        conn.execute("UPDATE credentials SET sign_count = %s, last_used_at = now() WHERE id = %s",
-                     (verified.new_sign_count, cred_id))
+        reauth.verify(conn, session, body.challengeId, body.credential, during="enrolment")
 
         existing = _clean_count(conn, session["user_id"])
         if existing >= bh.ENROL_MIN and not body.reset:

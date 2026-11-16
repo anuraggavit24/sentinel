@@ -32,7 +32,8 @@ def current_session(sentinel_session: Optional[str] = Cookie(default=None)) -> d
     with db.connect() as conn:
         row = conn.execute(
             "SELECT s.id AS session_id, s.user_id, s.credential_id, s.ip AS session_ip, s.created_at AS session_created_at, "
-            "u.username, u.display_name, u.webauthn_user_id, COALESCE(c.backed_up, false) AS synced_passkey "
+            "u.username, u.display_name, u.webauthn_user_id, u.role, s.ops_elevated_until, "
+            "COALESCE(c.backed_up, false) AS synced_passkey "
             "FROM sessions s JOIN users u ON u.id = s.user_id "
             "LEFT JOIN credentials c ON c.id = s.credential_id "
             "WHERE s.token_hash = %s AND s.revoked_at IS NULL AND s.expires_at > now()",

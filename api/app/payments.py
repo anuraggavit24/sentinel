@@ -351,7 +351,7 @@ def score_payment(
 def list_payments(session: dict = Depends(current_session)) -> dict:
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT id, payee_type, payee_display, amount_paise, score, band, status, created_at "
+            "SELECT id, payee_type, payee_display, amount_paise, score, band, status, review_decision, created_at "
             "FROM payments WHERE user_id = %s ORDER BY created_at DESC LIMIT 20",
             (session["user_id"],),
         ).fetchall()
@@ -364,6 +364,7 @@ def list_payments(session: dict = Depends(current_session)) -> dict:
                 "amount": rupees(r["amount_paise"]),
                 "band": r["band"],
                 "status": r["status"],
+                "reviewed": r["review_decision"],  # None | release | reject (Module 3a)
                 **({"score": r["score"]} if settings.SHOW_ANALYST_VIEW else {}),
                 "createdAt": r["created_at"].isoformat(),
             }

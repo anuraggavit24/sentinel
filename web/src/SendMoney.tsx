@@ -348,6 +348,11 @@ export default function SendMoney() {
                   {p.score !== undefined && <td>{p.score}</td>}
                   <td>
                     <span className={`pill band-${p.band}`}>{BAND_LABEL[p.band]}</span>
+                    {p.reviewed && (
+                      <span className={p.reviewed === "release" ? "pill ok" : "pill bad"} data-testid="reviewed">
+                        {p.reviewed === "release" ? "Released after review" : "Stopped after review"}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

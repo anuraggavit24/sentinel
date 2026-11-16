@@ -52,6 +52,8 @@ services:
       LEDGER_URL: http://ledger-gateway:8100  # consortium ledger bridge (slice 2c); empty = not connected
       LEDGER_TOKEN: "demo-ledger-token-change-me"  # must match ledger-gateway
       LEDGER_TIMEOUT_MS: "1000"  # a payment waits at most this long for the ledger, then scores without it
+      LEDGER_WRITE_TOKEN: "demo-ledger-write-token-change-me"  # Module 3a: analysts' reports go to the ledger
+      LEDGER_MSP: BankAMSP  # this bank, as the ledger knows it
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -63,9 +65,9 @@ services:
         condition: service_started
     mem_limit: 256m
 
-  # Read-only bridge to the Fabric ledger: only queryPayee and ping, as BankA's User1. Not published on
-  # the host; only the API can reach it, with the token. Starts even when Fablo is down (then the API's
-  # payments say "ledger unavailable" and score without it).
+  # Bridge to the Fabric ledger, as BankA's User1. Reads: queryPayee and ping (LEDGER_TOKEN). Writes:
+  # reportMule and confirmReport only (LEDGER_WRITE_TOKEN), for analysts' filings. Not published on the
+  # host. Starts even when Fablo is down (payments then score without the ledger; filings wait).
   ledger-gateway:
     build: ./ledger-gateway
     container_name: sentinel-ledger-gateway
@@ -79,6 +81,8 @@ services:
       CHANNEL: fraud-intel
       CHAINCODE: fraudintel
       LEDGER_TIMEOUT_MS: "700"  # below the API's 1000, so the sidecar answers "timeout" before the API gives up
+      LEDGER_WRITE_TOKEN: "demo-ledger-write-token-change-me"  # separate secret; without it the write routes do not exist
+      LEDGER_SUBMIT_TIMEOUT_MS: "15000"  # endorse (2 banks) + order + commit
     volumes:
       - ./fablo-target/fabric-config/crypto-config/peerOrganizations/banka.example.com:/crypto/banka:ro
     extra_hosts:

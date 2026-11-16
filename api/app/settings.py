@@ -37,3 +37,8 @@ LEDGER_TOKEN = os.environ.get("LEDGER_TOKEN", "")
 LEDGER_TIMEOUT_MS = int(os.environ.get("LEDGER_TIMEOUT_MS", "800"))
 # During a consortium key rotation, payees are also looked up under the previous key's hash.
 PAYEE_HMAC_KEY_PREVIOUS = os.environ.get("PAYEE_HMAC_KEY_PREVIOUS", "")
+# Module 3a: ledger writes (reportMule / confirmReport). Empty = analysts can decide, but nothing is filed.
+LEDGER_WRITE_TOKEN = os.environ.get("LEDGER_WRITE_TOKEN", "")
+LEDGER_MSP = os.environ.get("LEDGER_MSP", "BankAMSP")  # this bank, as the ledger knows it
+LEDGER_DRAIN_INTERVAL_SECONDS = float(os.environ.get("LEDGER_DRAIN_INTERVAL_SECONDS", "3"))
+OPS_ELEVATION_MINUTES = int(os.environ.get("OPS_ELEVATION_MINUTES", "10"))

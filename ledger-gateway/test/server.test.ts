@@ -24,6 +24,9 @@ class FakeLedger implements LedgerClient {
     if (this.mode !== 'ok') throw new LedgerError(`fake ${this.mode}`, this.mode);
     return JSON.stringify({ msp: 'BankAMSP', txId: 'x', txTime: 'now' });
   }
+  async submit(): Promise<string> {
+    throw new Error('writes are disabled in this server');
+  }
   close(): void {}
 }
 
@@ -81,7 +84,7 @@ test('only the two routes exist', async () => {
 });
 
 test('ledger failures map to distinct statuses so the API can tell them apart', async () => {
-  const expected = { timeout: 504, unavailable: 502, chaincode: 502, config: 503 } as const;
+  const expected = { timeout: 504, unavailable: 502, chaincode: 422, config: 503 } as const;
   for (const [mode, status] of Object.entries(expected)) {
     ledger.mode = mode as FakeLedger['mode'];
     const r = await post({ idHashes: [H1] });
@@ -124,4 +127,9 @@ test('an unexpected error keeps its message and is logged', async () => {
   assert.equal(r.status, 502);
   assert.match(body.error, /EACCES: permission denied/);   // not just "ledger call failed"
   assert.ok(logged.some((l) => l.includes('queryPayee failed') && l.includes('EACCES')));
+});
+
+test('write routes do not exist when no write token is configured', async () => {
+  const r = await fetch(`${base}/report-mule`, { method: 'POST', headers: { 'x-ledger-token': TOKEN }, body: '{}' });
+  assert.equal(r.status, 404);
 });

@@ -29,7 +29,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from . import audit, db, enrolment, payments, research, settings
+from . import audit, db, enrolment, ledger_outbox, ops, payments, research, settings
 from .auth_deps import current_session, now, request_ip, token_hash
 
 
@@ -38,14 +38,18 @@ async def lifespan(_: FastAPI):
     db.init()
     drainer = audit.Drainer()
     drainer.start()
+    filer = ledger_outbox.Drainer()
+    filer.start()
     yield
+    filer.stop()
     drainer.stop()
 
 
-app = FastAPI(title="Sentinel API", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="Sentinel API", version="0.6.0", lifespan=lifespan)
 app.include_router(payments.router)
 app.include_router(enrolment.router)
 app.include_router(research.router)
+app.include_router(ops.router)
 
 USERNAME_PATTERN = r"^[a-z0-9_.-]{3,32}$"
 
@@ -336,6 +340,7 @@ def me(session: dict = Depends(current_session)) -> dict:
     return {
         "username": session["username"],
         "displayName": session["display_name"],
+        "role": session["role"],
         "devices": [
             {
                 "id": bytes_to_base64url(bytes(c["id"])),

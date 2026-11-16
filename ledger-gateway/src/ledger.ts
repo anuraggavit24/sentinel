@@ -1,23 +1,29 @@
 /**
- * The only two ledger calls this service can make: queryPayee and ping. Both are evaluations (read
- * from one peer, nothing is ordered or written). Writes to the ledger come in Module 3, through the
- * outbox, with endorsement from two banks; they never go through this read path.
+ * The ledger calls this service can make. Reads: queryPayee and ping (evaluations on one peer).
+ * Writes (Module 3): reportMule and confirmReport only, submitted through the Gateway, which collects
+ * endorsements from two banks as the chaincode's policy requires, orders and waits for the commit.
  */
 import * as grpc from '@grpc/grpc-js';
-import { connect, Contract, Gateway, signers } from '@hyperledger/fabric-gateway';
+import { CommitError, connect, Contract, Gateway, signers } from '@hyperledger/fabric-gateway';
 import * as crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { Config } from './config';
 
+export type WriteFunction = 'reportMule' | 'confirmReport';
+
 export interface LedgerClient {
   queryPayee(idHashes: string[]): Promise<string>;
   ping(): Promise<string>;
+  submit(fn: WriteFunction, args: string[]): Promise<string>;
   close(): void;
 }
 
+// commit = the transaction was ordered but the peers marked it invalid (e.g. a read conflict): retryable.
+export type ErrorKind = 'config' | 'unavailable' | 'timeout' | 'chaincode' | 'commit';
+
 export class LedgerError extends Error {
-  constructor(message: string, readonly kind: 'config' | 'unavailable' | 'timeout' | 'chaincode') {
+  constructor(message: string, readonly kind: ErrorKind) {
     super(message);
   }
 }
@@ -72,6 +78,9 @@ export class FabricLedger implements LedgerClient {
       identity: { mspId: this.cfg.mspId, credentials: certificate },
       signer: signers.newPrivateKeySigner(privateKey),
       evaluateOptions: () => ({ deadline: Date.now() + this.cfg.timeoutMs }),
+      endorseOptions: () => ({ deadline: Date.now() + this.cfg.submitTimeoutMs }),
+      submitOptions: () => ({ deadline: Date.now() + this.cfg.submitTimeoutMs }),
+      commitStatusOptions: () => ({ deadline: Date.now() + this.cfg.submitTimeoutMs }),
     });
     this.client = client;
     this.gateway = gateway;
@@ -86,7 +95,7 @@ export class FabricLedger implements LedgerClient {
     return this.connecting;
   }
 
-  private async evaluate(fn: string, args: string[]): Promise<string> {
+  private async call(fn: string, args: string[], write: boolean): Promise<string> {
     let contract: Contract;
     try {
       contract = await this.contractOrConnect();
@@ -95,7 +104,7 @@ export class FabricLedger implements LedgerClient {
       throw new LedgerError(`could not set up the connection: ${String((err as Error)?.message ?? err).split('\n')[0].slice(0, 200)}`, 'config');
     }
     try {
-      const bytes = await contract.evaluateTransaction(fn, ...args);
+      const bytes = write ? await contract.submitTransaction(fn, ...args) : await contract.evaluateTransaction(fn, ...args);
       return Buffer.from(bytes).toString('utf8');
     } catch (err) {
       throw this.translate(err);
@@ -103,6 +112,10 @@ export class FabricLedger implements LedgerClient {
   }
 
   private translate(err: unknown): LedgerError {
+    // Checked first: a CommitError's code is a transaction validation code, not a gRPC status.
+    if (err instanceof CommitError) {
+      return new LedgerError(`transaction ${err.transactionId} was not valid (validation code ${err.code})`, 'commit');
+    }
     const e = err as { code?: number; details?: unknown; message?: string };
     if (e.code === grpc.status.DEADLINE_EXCEEDED) return new LedgerError('ledger did not answer in time', 'timeout');
     if (e.code === grpc.status.UNAVAILABLE) {
@@ -116,11 +129,15 @@ export class FabricLedger implements LedgerClient {
   }
 
   queryPayee(idHashes: string[]): Promise<string> {
-    return this.evaluate('queryPayee', [JSON.stringify(idHashes)]);
+    return this.call('queryPayee', [JSON.stringify(idHashes)], false);
   }
 
   ping(): Promise<string> {
-    return this.evaluate('ping', []);
+    return this.call('ping', [], false);
+  }
+
+  submit(fn: WriteFunction, args: string[]): Promise<string> {
+    return this.call(fn, args, true);
   }
 
   close(): void {

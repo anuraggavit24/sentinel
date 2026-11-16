@@ -27,6 +27,7 @@ export interface Session {
 export interface Me {
   username: string;
   displayName: string;
+  role: "customer" | "analyst";
   devices: Device[];
   sessions: Session[];
 }
@@ -181,6 +182,7 @@ export interface PaymentRow {
   score?: number;
   band: Band;
   status: string;
+  reviewed: "release" | "reject" | null;
   createdAt: string;
 }
 
@@ -275,3 +277,57 @@ export const sendStudySample = (code: string, promptNo: number, behaviour: Behav
   study<StudyStatus>("/research/samples", code, { promptNo, behaviour });
 export const withdrawFromStudy = (code: string) =>
   study<{ withdrawn: boolean; samplesDeleted: number }>("/research/withdraw", code, {});
+
+// ---------------------------------------------------------------- Module 3a: fraud operations
+export interface OpsStatus {
+  elevatedUntil: string | null;
+  ledgerWrites: boolean;
+  bank: string;
+}
+
+export interface QueueItem {
+  id: string;
+  createdAt: string;
+  amount: string;
+  payeeType: PayeeType;
+  payee: string;
+  payeeRef: string;
+  customer: string;
+  score: number;
+  band: Band;
+  reasons: AnalystReason[];
+  coaching: boolean;
+  consortium: ConsortiumView | null;
+  otherCustomers7d: number;
+}
+
+export interface Filing {
+  id: number;
+  status: "pending" | "reported" | "confirmed" | "already_ours" | "failed";
+  attempts: number;
+  lastError: string | null;
+  reportId: string | null;
+  severity: string;
+  payee: string | null;
+  amount: string | null;
+  evidenceHash: string;
+  createdAt: string;
+  doneAt: string | null;
+  nextAttemptAt: string | null;
+}
+
+export const getOpsStatus = () => call<OpsStatus>("/ops/status");
+export const getQueue = () => call<{ payments: QueueItem[] }>("/ops/queue");
+export const getFilings = () => call<{ filings: Filing[] }>("/ops/filings");
+
+/** Analyst actions need a fresh passkey check (Windows Hello prompt); it lasts a few minutes. */
+export async function elevateOps() {
+  const { challengeId, options } = await post<Ceremony<PublicKeyCredentialRequestOptionsJSON>>("/ops/elevate/options");
+  const credential = await startAuthentication({ optionsJSON: options });
+  return post<{ elevatedUntil: string; minutes: number }>("/ops/elevate", { challengeId, credential });
+}
+
+export const decidePayment = (
+  id: string,
+  body: { decision: "release" | "reject"; note: string; report: boolean; severity: "LOW" | "MEDIUM" | "HIGH" },
+) => post<{ status: string; reported: boolean; outboxId: number | null }>(`/ops/payments/${id}/decision`, body);

@@ -112,6 +112,43 @@ CREATE TABLE IF NOT EXISTS behaviour_enrolment (
     expires_at TIMESTAMPTZ NOT NULL
 );
 
+-- Module 3a: fraud operations. Analysts are ordinary passkey users with a role, granted by the operator.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'customer';
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('customer', 'analyst'));
+-- Acting as an analyst needs a fresh passkey check; it lasts a few minutes on this session only.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ops_elevated_until TIMESTAMPTZ;
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
+ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('completed', 'held', 'rejected'));
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS review_decision TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS review_note TEXT;
+CREATE INDEX IF NOT EXISTS payments_held_idx ON payments(created_at) WHERE status = 'held';
+-- Ledger writes go through an outbox: the analyst's decision commits locally at once, the ledger write
+-- is retried until Fabric accepts or definitely refuses it, and nothing is lost if the ledger is down.
+CREATE TABLE IF NOT EXISTS ledger_outbox (
+    id              BIGSERIAL PRIMARY KEY,
+    payment_id      UUID REFERENCES payments(id) ON DELETE SET NULL,
+    id_hash         TEXT NOT NULL,
+    id_type         TEXT NOT NULL CHECK (id_type IN ('ACCOUNT', 'UPI', 'PHONE')),
+    severity        TEXT NOT NULL CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH')),
+    source          TEXT NOT NULL CHECK (source IN ('ANALYST', 'CUSTOMER_COMPLAINT', 'SANDBOX_CAPTURE')),
+    evidence        JSONB NOT NULL,       -- kept off-chain; only its hash goes on the ledger
+    evidence_hash   TEXT NOT NULL,
+    requested_by    UUID REFERENCES users(id) ON DELETE SET NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'reported', 'confirmed', 'already_ours', 'failed')),
+    attempts        INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_error      TEXT,
+    report_id       TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    done_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ledger_outbox_due_idx ON ledger_outbox(next_attempt_at) WHERE status = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_outbox_one_per_payment ON ledger_outbox(payment_id) WHERE payment_id IS NOT NULL;
+
 -- Slice 2b part 2: volunteer typing study. Deliberately NOT linked to users: volunteers have no bank
 -- account, and no name, IP address or user agent is stored. Invites are single use; the participant code
 -- is issued at join time, so whoever handed out the invite cannot link it to the data.
@@ -165,7 +202,7 @@ def ensure_database() -> None:
 # older: statements like ALTER TABLE ... ADD COLUMN IF NOT EXISTS take an ACCESS EXCLUSIVE lock even when
 # the column exists, so running them on every start deadlocked in-flight payments (found by a flaky
 # test that starts several clients while others pay; in production, a rolling restart).
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _MIGRATION_LOCK = 7_402_118  # advisory lock id: one process migrates at a time
 
 

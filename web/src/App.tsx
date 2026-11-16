@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import Ops from "./Ops";
 import SendMoney from "./SendMoney";
 import {
   addDevice,
@@ -37,7 +38,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [page, setPage] = useState<"account" | "send">("send");
+  const [page, setPage] = useState<"account" | "send" | "ops">("send");
 
   const refresh = useCallback(async () => {
     try {
@@ -148,9 +149,15 @@ export default function App() {
         <button className={page === "account" ? "tab active" : "tab"} onClick={() => { setPage("account"); setNotice(null); setError(null); }} type="button">
           Passkeys and sessions
         </button>
+        {me.role === "analyst" && (
+          <button className={page === "ops" ? "tab active" : "tab"} onClick={() => { setPage("ops"); setNotice(null); setError(null); }} type="button">
+            Fraud ops
+          </button>
+        )}
       </div>
 
       {page === "send" && <SendMoney />}
+      {page === "ops" && me.role === "analyst" && <Ops />}
 
       {page === "account" && (
       <>

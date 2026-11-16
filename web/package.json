@@ -1,12 +1,14 @@
 {
   "name": "sentinel-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e": "node e2e/passkey.e2e.mjs && node e2e/payments.e2e.mjs && node e2e/behaviour.e2e.mjs && node e2e/study.e2e.mjs && node e2e/ops.e2e.mjs",
+    "e2e:ledger": "node e2e/ledger.e2e.mjs"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.1.0",
