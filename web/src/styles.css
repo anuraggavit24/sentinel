@@ -43,6 +43,8 @@ button.primary { background: #1f5eff; border-color: #1f5eff; color: #fff; paddin
 .stack { display: grid; gap: 4px; }
 select { padding: 10px 12px; border: 1px solid #cfd3d8; border-radius: 8px; font-size: 15px; background: #fff; }
 .two { display: grid; grid-template-columns: 1fr 1.4fr; gap: 12px; }
+.two > label { min-width: 0; }
+.two input { width: 100%; min-width: 0; box-sizing: border-box; }
 .small { font-size: 13px; }
 .result { border: 1px solid #e3e5e8; border-radius: 10px; padding: 18px; border-left-width: 5px; }
 .result.band-allow { border-left-color: #12b76a; }
@@ -75,3 +77,17 @@ th { color: #66707a; font-weight: 500; }
 .profile-card { background: #f8faff; border: 1px solid #dbe5ff; border-radius: 10px; padding: 14px 16px; }
 .practice { margin-top: 12px; }
 code { background: #eef2f7; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+
+/* Volunteer typing study */
+.consent { padding-left: 1.2rem; line-height: 1.5; }
+.consent li { margin-bottom: 0.4rem; }
+.code-big {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.8rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+  padding: 0.8rem;
+  border: 2px dashed currentColor;
+  border-radius: 10px;
+  user-select: all;
+}

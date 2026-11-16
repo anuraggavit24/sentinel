@@ -49,6 +49,11 @@ class DemoSignals(BaseModel):
 def require_operator(x_demo_operator_token: Optional[str] = Header(default=None)) -> None:
     if not settings.DEMO_SIGNALS:
         raise HTTPException(404, "Demo signals are disabled")
+    check_operator_token(x_demo_operator_token)
+
+
+def check_operator_token(x_demo_operator_token: Optional[str]) -> None:
+    """The operator token alone, for operator tools that do not depend on demo signals (the study)."""
     if not settings.DEMO_OPERATOR_TOKEN:
         raise HTTPException(503, "DEMO_OPERATOR_TOKEN is not configured")
     if not x_demo_operator_token or not hmac.compare_digest(

@@ -47,6 +47,8 @@ services:
       SHOW_ANALYST_VIEW: "1"  # demo only: score, points and FRI category in responses; off for real customers
       PAYEE_HMAC_KEY: "consortium-demo-key-v1"  # demo only; same key as scripts/scenario4.sh and the ledger
       AUDIT_TOKEN: "demo-audit-token-change-me"  # must match audit-api
+      STUDY_ENABLED: "1"  # volunteer typing study at http://localhost:5173/#/study (invites need the operator token)
+      STUDY_SESSION_GAP_HOURS: "4"  # minimum gap between a volunteer's sessions
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

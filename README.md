@@ -151,6 +151,11 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 19 | An allowed payment with anomalous typing was learned | An attacker whose payment slips through would teach the profile their rhythm | Samples with anomaly ≥ 0.3 are never learned | `test_anomalous_typing_is_never_learned_even_if_the_payment_is_allowed` |
 | 20 | Schema DDL ran on every start-up | `ALTER TABLE ... IF NOT EXISTS` takes an exclusive lock even when nothing changes: concurrent start-ups deadlocked in-flight payments (flaky test, 2 of 6 runs); in production, a rolling restart | DDL only when the schema version is older, serialised with an advisory lock; same fix in the audit service | `test_startup_does_not_block_on_a_busy_payments_table` (fails without the fix); parallel tests 10/10 |
 | 21 | "Signals were set by the demo operator" shown on every demo payment | The analyst view claimed injected signals when none were on | Shown only when a signal is actually on | `test_operator_flag_is_false_when_no_signal_is_on` |
+| 22 | One person could pose as many volunteers | Fake "people" would make the model look better at telling people apart | Single-use invites issued by the operator | `test_invite_is_single_use_and_consent_is_required` |
+| 23 | Study runs on a shared laptop | A participant code kept in the browser would hand the next volunteer someone else's session | Code held in memory only; "Finish" wipes it; browser test checks storage is empty | `study.e2e.mjs`: no participant code left in browser storage |
+| 24 | Withdrawal vs an append-only audit log | A participant id in the hash-chained log could never be deleted | Audit events carry counts, never participant ids | `test_withdrawal_deletes_everything_and_the_audit_log_keeps_no_id` |
+| 25 | Export could re-identify volunteers | Join order and clock times match "who sat at the laptop when" | Shuffled pseudonyms; sessions carry hours since the first session, not timestamps | `test_export_is_operator_only_pseudonymous_and_has_no_clock_times` |
+| 26 | The server cannot see what was typed | A script could submit 6 keystrokes for a 24-character prompt | Key-press count must fit the prompt length (at least the length, at most 4× + 10); prompts in order | `test_pasted_too_short_or_implausible_samples_are_rejected`, `test_prompts_must_be_typed_in_order` |
 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
@@ -258,13 +263,90 @@ How to read it:
 - **At the chosen thresholds**, under 1% of a user's own attempts are flagged at 0.3 (about 82–85% of
   other people's are), and none at 0.5 (about 51–54% of other people's are).
 - **These are not real-world numbers.** Real typing is messier (fatigue, a new keyboard, a phone vs a
-  laptop). Real error rates need real people; that is the next part of 2b.
+  laptop). Real error rates need real people: see the volunteer study below.
 
 ### Limits (stated, not solved)
 - Client-side signals can be forged by an attacker who reads this code and scripts the browser. Banks
   harden collection SDKs; this demo does not.
 - Five samples is a thin profile; early decisions are less reliable.
 - The profile is per user across devices; typing on a phone and on a laptop will differ.
+
+## Phase 2 · Module 2b part 2: volunteer typing study (real error rates)
+
+Every behaviour number above comes from synthetic users. This part collects **real** typing from
+consenting volunteers under a fixed protocol, and `api/scripts/eval_study.py` turns it into error rates
+with honest confidence intervals.
+
+**Protocol (fixed before any data is seen)**
+- Everyone types the same 10 practice prompts (a UPI ID and an amount, like the payment form), so other
+  volunteers' samples are fair impostor attempts on identical text.
+- A session is 10 samples. Each volunteer does 2 sessions (3 at most), at least 4 hours apart.
+- **Profile:** the first 5 samples of session 1 (the same as guided enrolment).
+- **Same-sitting test:** the rest of session 1. Optimistic: same hour, same warm-up.
+- **Later-session test:** sessions 2–3. This is the number that matters.
+- **Impostors:** every sample of every other volunteer, scored against each profile.
+- Rates are averaged **per person**, and the 95% intervals resample **people**, not attempts: one
+  person's attempts are correlated, so resampling attempts would claim false precision.
+- Thresholds stay at 0.3 / 0.5 (chosen on synthetic data). They are **not** re-tuned on the study data:
+  tuning and reporting on the same data flatters the result.
+- Fewer than 5 volunteers: no numbers. Fewer than 20: marked as a pilot.
+
+**Privacy**
+- Not linked to bank accounts. No name, email, IP address or browser is stored; only timing statistics.
+- Invites are single use. The participant code is created at join, so whoever handed out the invite
+  cannot link it to the data. Only hashes of both codes are stored.
+- Withdrawal deletes every sample immediately. The audit log records operator actions and counts only.
+- The export has shuffled pseudonyms (`p01`…) and "hours after the first session" instead of clock times.
+- At the end of the project, everything is deleted with one operator call (below).
+- Volunteers read the consent text and tick "I agree" before anything is recorded. For a class project
+  this is informed consent, not an ethics-board approval; if the college has a process, use it.
+
+### Running the study
+
+The API port is bound to this machine only, so volunteers type on your laptop (which also keeps the
+keyboard the same for everyone: differences come from the person, not the hardware).
+
+```bash
+TOKEN=demo-operator-token-change-me
+
+# 1. Issue invite codes (one per volunteer; shown once)
+curl -s -X POST localhost:8000/research/invites -H "x-demo-operator-token: $TOKEN" \
+     -H 'content-type: application/json' -d '{"count": 10}'
+
+# 2. Each volunteer opens http://localhost:5173/#/study, enters an invite, reads the consent,
+#    writes down their participant code and types 10 samples. "Finish" before the next person.
+#    4+ hours later (ideally the next day), they come back with their code for session 2.
+
+# 3. Export and evaluate
+curl -s localhost:8000/research/export -H "x-demo-operator-token: $TOKEN" > study.json
+python3 api/scripts/eval_study.py study.json
+
+# 4. When the project ends
+curl -s -X POST localhost:8000/research/purge -H "x-demo-operator-token: $TOKEN" \
+     -H 'content-type: application/json' -d '{"confirm": "DELETE ALL STUDY DATA"}'
+```
+
+The script reports, at each threshold, how often a volunteer's **own** attempts are flagged (same
+sitting and later session), how often **other people** are missed, the equal error rate, and which
+volunteers the model fails (more than 25% of their later attempts flagged). `study.json` is volunteer
+data: do not commit it.
+
+Tests: `api/tests/test_study.py` (16, API and database), `api/tests/test_study_eval.py` (9, the
+evaluation maths, including a check that the fast EER matches a plain loop), and `web/e2e/study.e2e.mjs`
+(12 checks in real Chrome: join, consent gate, a full session typed with real key events, the session gap,
+resume, empty browser storage after "Finish", withdrawal).
+
+### Results
+
+No volunteer data yet. Until there is, the only behaviour numbers are the synthetic ones above, and they
+must not be presented as real-world accuracy.
+
+### Limits of the study
+- **Zero-effort impostors only:** other volunteers type normally. Nobody watches the victim and tries
+  to copy their rhythm, which a real attacker could; that would be missed more often.
+- **One laptop:** real customers type on their own phones. Phone typing is a different study.
+- **Small numbers:** a class can give 10–30 volunteers. Report the intervals, not just the percentages.
+- **Same prompts:** short, practised text. Free typing in a real payment varies more.
 
 ### Resetting demo data
 
@@ -273,3 +355,5 @@ Payments, typing samples and operator signals can be cleared without deleting ac
 ```bash
 docker exec sentinel-db psql -U sentinel -d sentinel -c "TRUNCATE payments, behaviour_samples, behaviour_enrolment, session_signals CASCADE;"
 ```
+
+This does not touch the volunteer study; study data is removed only by withdrawal or the purge call.

@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.risk.behaviour import IsolationForestModel, RobustZModel, validate  # noqa: E402
+from app.risk.metrics import eer, rate_at  # noqa: E402
 
 
 def make_user(rnd: random.Random):
@@ -42,23 +43,6 @@ def make_user(rnd: random.Random):
     return sample
 
 
-def eer(genuine: list[float], impostor: list[float]) -> tuple[float, float]:
-    """Equal error rate and the threshold where it occurs: false rejects (genuine flagged) equal
-    false accepts (impostor not flagged)."""
-    g, i = sorted(genuine), sorted(impostor)
-    best = (2.0, 0.0, 0.5)
-    for t in sorted(set(g + i)):
-        frr = sum(x >= t for x in g) / len(g)
-        far = sum(x < t for x in i) / len(i)
-        if abs(frr - far) < best[0]:
-            best = (abs(frr - far), (frr + far) / 2, t)
-    return best[1], best[2]
-
-
-def rate_at(threshold: float, scores: list[float]) -> float:
-    return sum(s >= threshold for s in scores) / len(scores)
-
-
 def run(users: int = 60, tests: int = 20, seed: int = 7) -> None:
     rnd = random.Random(seed)
     people = [make_user(rnd) for _ in range(users)]
@@ -78,7 +62,7 @@ def run(users: int = 60, tests: int = 20, seed: int = 7) -> None:
             print(f"{model_cls.name:<18}{n:>8}{e:>7.1%}{t:>6.2f}   {rate_at(0.3, gen):>11.1%}{rate_at(0.3, imp):>14.1%}"
                   f"   {rate_at(0.5, gen):>11.1%}{rate_at(0.5, imp):>14.1%}")
     print("\nThresholds 0.3 / 0.5 were chosen on a different seed (11) than this report (7).")
-    print("SYNTHETIC DATA ONLY. Real-world error rates need the volunteer study.")
+    print("SYNTHETIC DATA ONLY. Real-world error rates: scripts/eval_study.py on volunteer data.")
 
 
 if __name__ == "__main__":

@@ -122,6 +122,9 @@ export default function App() {
         </form>
         {error && <p className="error">{error}</p>}
         {notice && <p className="notice">{notice}</p>}
+        <p className="small muted">
+          <a href="#/study">Volunteer for the typing study</a> (no account needed)
+        </p>
       </main>
     );
   }

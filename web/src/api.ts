@@ -218,3 +218,42 @@ export async function startEnrolment(reset: boolean) {
 
 export const sendEnrolmentSample = (behaviour: BehaviourSample | null) =>
   post<{ added: number; needed: number; done: boolean }>("/behaviour/enrol/sample", { behaviour });
+
+// ---------------------------------------------------------------- Module 2b part 2: volunteer typing study
+// Not linked to bank accounts. The participant code is sent as a header and kept in memory only: the
+// study runs on a shared laptop, so storing it would hand the next volunteer someone else's session.
+export interface StudyProtocol {
+  consentVersion: string;
+  consent: string[];
+  prompts: { upi: string; amount: string }[];
+  samplesPerSession: number;
+  minSessions: number;
+  maxSessions: number;
+  sessionGapHours: number;
+}
+
+export interface StudyStatus {
+  keyboard?: string;
+  sessions: { session: number; samples: number }[];
+  next: { session: number | null; promptNo: number | null; allowed: boolean; opensAt: string | null; finished: boolean };
+  samplesPerSession: number;
+  minSessions: number;
+  maxSessions: number;
+  enoughForStudy: boolean;
+}
+
+const study = <T>(path: string, code: string | null, body?: unknown) =>
+  call<T>(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json", ...(code ? { "X-Participant-Code": code } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+export const getStudyProtocol = () => study<StudyProtocol>("/research/protocol", null);
+export const joinStudy = (inviteCode: string, consentVersion: string, keyboard: string) =>
+  study<{ participantCode: string }>("/research/join", null, { inviteCode, consentVersion, keyboard });
+export const getStudyStatus = (code: string) => study<StudyStatus>("/research/me", code);
+export const sendStudySample = (code: string, promptNo: number, behaviour: BehaviourSample | null) =>
+  study<StudyStatus>("/research/samples", code, { promptNo, behaviour });
+export const withdrawFromStudy = (code: string) =>
+  study<{ withdrawn: boolean; samplesDeleted: number }>("/research/withdraw", code, {});

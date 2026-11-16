@@ -112,6 +112,31 @@ CREATE TABLE IF NOT EXISTS behaviour_enrolment (
     expires_at TIMESTAMPTZ NOT NULL
 );
 
+-- Slice 2b part 2: volunteer typing study. Deliberately NOT linked to users: volunteers have no bank
+-- account, and no name, IP address or user agent is stored. Invites are single use; the participant code
+-- is issued at join time, so whoever handed out the invite cannot link it to the data.
+CREATE TABLE IF NOT EXISTS research_invites (
+    code_hash  BYTEA PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    used_at    TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS research_participants (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code_hash       BYTEA NOT NULL UNIQUE,
+    consent_version TEXT NOT NULL,
+    keyboard        TEXT NOT NULL CHECK (keyboard IN ('laptop', 'external', 'phone')),
+    joined_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS research_samples (
+    id             BIGSERIAL PRIMARY KEY,
+    participant_id UUID NOT NULL REFERENCES research_participants(id) ON DELETE CASCADE,
+    session_no     INT NOT NULL CHECK (session_no >= 1),
+    prompt_no      INT NOT NULL CHECK (prompt_no >= 0),
+    features       JSONB NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_samples_participant_idx ON research_samples(participant_id, id);
+
 -- Demo-only device and telecom signals for a session (the web demo cannot read SIM or call state).
 CREATE TABLE IF NOT EXISTS session_signals (
     session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -140,7 +165,7 @@ def ensure_database() -> None:
 # older: statements like ALTER TABLE ... ADD COLUMN IF NOT EXISTS take an ACCESS EXCLUSIVE lock even when
 # the column exists, so running them on every start deadlocked in-flight payments (found by a flaky
 # test that starts several clients while others pay; in production, a rolling restart).
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _MIGRATION_LOCK = 7_402_118  # advisory lock id: one process migrates at a time
 
 

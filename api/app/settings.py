@@ -26,3 +26,7 @@ DEMO_OPERATOR_TOKEN = os.environ.get("DEMO_OPERATOR_TOKEN", "")
 # Adds the score, points and FRI category to payment responses. Demo/analyst only: for a customer this
 # turns the payment form into a risk-rating lookup tool.
 SHOW_ANALYST_VIEW = os.environ.get("SHOW_ANALYST_VIEW", "0") == "1"
+# Volunteer typing study (slice 2b part 2). Off unless enabled. Not linked to bank accounts.
+STUDY_ENABLED = os.environ.get("STUDY_ENABLED", "0") == "1"
+# Minimum gap between a volunteer's study sessions, so genuine attempts include day-to-day drift.
+STUDY_SESSION_GAP_HOURS = float(os.environ.get("STUDY_SESSION_GAP_HOURS", "4"))
