@@ -118,8 +118,8 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('customer', 'analyst'));
 -- Acting as an analyst needs a fresh passkey check; it lasts a few minutes on this session only.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ops_elevated_until TIMESTAMPTZ;
-ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
-ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('completed', 'held', 'rejected'));
+-- (payments_status_check is defined once, below in the 3b block: the whole schema is replayed on every
+--  upgrade, so an older, narrower copy of the constraint here would reject newer rows.)
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS review_decision TEXT;
@@ -148,6 +148,13 @@ CREATE TABLE IF NOT EXISTS ledger_outbox (
 );
 CREATE INDEX IF NOT EXISTS ledger_outbox_due_idx ON ledger_outbox(next_attempt_at) WHERE status = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_outbox_one_per_payment ON ledger_outbox(payment_id) WHERE payment_id IS NOT NULL;
+
+-- Module 3b: the customer's own step-up, and the sandbox for suspected account takeover.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sandboxed_at TIMESTAMPTZ;
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
+ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('completed', 'held', 'rejected', 'sandboxed'));
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS step_up JSONB;           -- the customer's answers and the outcome
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS step_up_flagged BOOLEAN NOT NULL DEFAULT false;  -- scam pattern: review first
 
 -- Slice 2b part 2: volunteer typing study. Deliberately NOT linked to users: volunteers have no bank
 -- account, and no name, IP address or user agent is stored. Invites are single use; the participant code
@@ -202,7 +209,7 @@ def ensure_database() -> None:
 # older: statements like ALTER TABLE ... ADD COLUMN IF NOT EXISTS take an ACCESS EXCLUSIVE lock even when
 # the column exists, so running them on every start deadlocked in-flight payments (found by a flaky
 # test that starts several clients while others pay; in production, a rolling restart).
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _MIGRATION_LOCK = 7_402_118  # advisory lock id: one process migrates at a time
 
 

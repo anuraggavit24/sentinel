@@ -189,7 +189,7 @@ def test_held_payments_do_not_count_as_money_sent(client):
     ₹1.85 lakh attempt pushed every later new-payee payment to step-up for 24 hours."""
     set_signals(client, simSwapHoursAgo=1, newDevice=True)
     held = pay(client, "95000", payee={"upi": "drain.one@okaxis"}).json()
-    assert held["status"] == "held"
+    assert held["analyst"]["sandbox"]["active"]  # Module 3b: blocked as a sandboxed attempt; no money moved
     set_signals(client)
     small = pay(client, "250", payee={"upi": "kirana.store@okicici"}).json()
     assert small["band"] == "allow"

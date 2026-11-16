@@ -48,3 +48,22 @@ def test_old_database_without_schema_meta_is_migrated():
         conn.commit()
         assert db.migrate(conn) is True
         assert conn.execute("SELECT version FROM schema_meta").fetchone()["version"] == db.SCHEMA_VERSION
+
+
+def test_replaying_the_schema_keeps_rows_of_every_status():
+    """Found in 3b: the schema is replayed in full on every upgrade. An older copy of a CHECK constraint
+    (status IN completed/held/rejected) ran before the newer one and failed on 'sandboxed' rows, which
+    would have broken the next upgrade of any database that had seen a sandboxed payment."""
+    from app import db
+
+    with db.connect() as conn:
+        user = conn.execute("INSERT INTO users (username, display_name, webauthn_user_id) "
+                            "VALUES (%s, 'Replay', %s) RETURNING id",
+                            (f"replay{os.urandom(4).hex()}", os.urandom(16))).fetchone()["id"]
+        for status in ("completed", "held", "rejected", "sandboxed"):
+            conn.execute(
+                "INSERT INTO payments (user_id, payee_type, payee_hash, payee_display, amount_paise, score, band, status, "
+                "reasons, signals) VALUES (%s, 'UPI', 'h', 'd', 100, 0, 'allow', %s, '[]', '{}')", (user, status))
+        conn.execute("UPDATE schema_meta SET version = 0")
+        assert db.migrate(conn) is True   # the full schema again, over rows of every status
+        assert conn.execute("SELECT count(*) AS n FROM payments WHERE user_id = %s", (user,)).fetchone()["n"] == 4

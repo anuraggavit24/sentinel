@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   explain,
+  getAccount,
   getDemoFri,
   getMe,
   getSignals,
@@ -16,6 +17,7 @@ import {
 } from "./api";
 import { useBehaviour } from "./behaviour";
 import BehaviourProfile from "./BehaviourProfile";
+import StepUp from "./StepUp";
 
 const BAND_LABEL: Record<Band, string> = {
   allow: "Allowed",
@@ -24,10 +26,17 @@ const BAND_LABEL: Record<Band, string> = {
 };
 
 const BAND_HELP: Record<Band, string> = {
-  allow: "Low risk. This payment would go through.",
+  allow: "Low risk. Payment sent.",
   step_up:
     "Before this payment goes through we need to check it with you. If someone on a call asked you to make it, stop: banks and police never ask you to move money.",
   sandbox: "This session shows signs of someone else using your account. The payment has been held.",
+};
+
+const REVIEW_LABEL: Record<NonNullable<PaymentRow["reviewed"]>, string> = {
+  release: "Released after review",
+  reject: "Stopped after review",
+  customer_confirmed: "Confirmed by you",
+  customer_cancelled: "Cancelled by you",
 };
 
 const NO_SIGNALS: DemoSignals = {
@@ -54,6 +63,8 @@ export default function SendMoney() {
   const [error, setError] = useState<string | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [history, setHistory] = useState<PaymentRow[]>([]);
+  const [balance, setBalance] = useState<string | null>(null);
+  const [stepUpFor, setStepUpFor] = useState<string | null>(null);
   // One idempotency key per payment attempt: reused if the same payment is retried after an error,
   // replaced as soon as any field changes or a decision comes back.
   const attemptKey = useRef<string | null>(null);
@@ -69,7 +80,9 @@ export default function SendMoney() {
 
   const refreshHistory = useCallback(async () => {
     try {
-      setHistory((await listPayments()).payments);
+      const [h, a] = await Promise.all([listPayments(), getAccount()]);
+      setHistory(h.payments);
+      setBalance(a.balance);
     } catch (err) {
       setError(explain(err));
     }
@@ -94,7 +107,9 @@ export default function SendMoney() {
     const payee: Record<string, string> =
       payeeType === "UPI" ? { upi } : payeeType === "PHONE" ? { phone } : { ifsc, account };
     try {
-      setDecision(await scorePayment(payeeType, payee, amount, attemptKey.current, behaviour.snapshot()));
+      const d = await scorePayment(payeeType, payee, amount, attemptKey.current, behaviour.snapshot());
+      setDecision(d);
+      setStepUpFor(d.status === "held" && d.band === "step_up" && !d.replayed ? d.paymentId : null);
       attemptKey.current = null;
       behaviour.reset();
       await refreshHistory();
@@ -201,6 +216,7 @@ export default function SendMoney() {
               ))}
             </ul>
           )}
+          {stepUpFor === decision.paymentId && <StepUp key={decision.paymentId} paymentId={decision.paymentId} onDone={() => void refreshHistory()} />}
 
           {a && (
             <div className="analyst">
@@ -234,6 +250,12 @@ export default function SendMoney() {
                 {" · "}
                 {a.signals.behaviour.learned ? "added to your profile" : `not added to your profile (${a.signals.behaviour.notLearnedBecause})`}
               </p>
+              {a.sandbox?.active && (
+                <p className="sandbox-line" data-testid="sandbox-line">
+                  SANDBOX ({a.sandbox.why}): this session is shown “Allowed” and a falling balance, but nothing was sent.
+                  The payee is captured for the consortium ledger as a sandbox report.
+                </p>
+              )}
               <ConsortiumLine c={a.signals.consortium} />
               <p className="muted small">
                 Engine: {decision.engine}.
@@ -325,7 +347,11 @@ export default function SendMoney() {
       </section>
 
       <section>
-        <h2>Recent payments</h2>
+        <div className="row">
+          <h2>Recent payments</h2>
+          {balance && <span className="balance" data-testid="balance">Balance {balance}</span>}
+        </div>
+        {stepUpFor && stepUpFor !== decision?.paymentId && <StepUp key={stepUpFor} paymentId={stepUpFor} onDone={() => void refreshHistory()} />}
         {history.length === 0 ? (
           <p className="muted">None yet.</p>
         ) : (
@@ -348,10 +374,18 @@ export default function SendMoney() {
                   {p.score !== undefined && <td>{p.score}</td>}
                   <td>
                     <span className={`pill band-${p.band}`}>{BAND_LABEL[p.band]}</span>
+                    {p.status === "blocked_takeover" && (
+                      <span className="pill bad" data-testid="blocked">Blocked: someone else was using your account</span>
+                    )}
                     {p.reviewed && (
-                      <span className={p.reviewed === "release" ? "pill ok" : "pill bad"} data-testid="reviewed">
-                        {p.reviewed === "release" ? "Released after review" : "Stopped after review"}
+                      <span className={p.reviewed === "release" || p.reviewed === "customer_confirmed" ? "pill ok" : "pill bad"} data-testid="reviewed">
+                        {REVIEW_LABEL[p.reviewed]}
                       </span>
+                    )}
+                    {p.status === "held" && p.band === "step_up" && !p.reviewed && !p.stepUpFlagged && stepUpFor !== p.id && (
+                      <button className="link" type="button" onClick={() => setStepUpFor(p.id)}>
+                        Confirm or cancel
+                      </button>
                     )}
                   </td>
                 </tr>

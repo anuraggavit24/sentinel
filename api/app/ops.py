@@ -103,15 +103,18 @@ def queue(session: dict = Depends(analyst)) -> dict:
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT p.id, p.created_at, p.amount_paise, p.payee_type, p.payee_display, p.payee_hash, p.score, p.band, "
-            "       p.reasons, p.signals, p.coaching, u.display_name, "
+            "       p.reasons, p.signals, p.coaching, p.step_up, p.step_up_flagged, u.display_name, "
             # The same payee held for other customers recently is itself a mule signal.
             "       (SELECT count(DISTINCT q.user_id) FROM payments q WHERE q.payee_hash = p.payee_hash "
             "          AND q.user_id <> p.user_id AND q.created_at > now() - interval '7 days') AS other_customers "
             "FROM payments p JOIN users u ON u.id = p.user_id "
-            "WHERE p.status = 'held' AND p.user_id <> %s ORDER BY p.created_at LIMIT 100",
+            # Customers who described a scam in their step-up answers come first.
+            "WHERE p.status = 'held' AND p.user_id <> %s ORDER BY p.step_up_flagged DESC, p.created_at LIMIT 100",
             (session["user_id"],),
         ).fetchall()
-    return {"payments": [
+        total = conn.execute("SELECT count(*) AS n FROM payments WHERE status = 'held' AND user_id <> %s",
+                             (session["user_id"],)).fetchone()["n"]
+    return {"total": total, "payments": [
         {
             "id": str(r["id"]),
             "createdAt": r["created_at"].isoformat(),
@@ -126,6 +129,8 @@ def queue(session: dict = Depends(analyst)) -> dict:
             "coaching": r["coaching"],
             "consortium": (r["signals"] or {}).get("consortium"),
             "otherCustomers7d": r["other_customers"],
+            "stepUp": r["step_up"],
+            "scamPattern": r["step_up_flagged"],
         }
         for r in rows
     ]}
@@ -193,7 +198,7 @@ def decide(payment_id: uuid.UUID, body: DecisionIn, session: dict = Depends(elev
 def filings(session: dict = Depends(analyst)) -> dict:
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT o.id, o.status, o.attempts, o.last_error, o.report_id, o.severity, o.created_at, o.done_at, "
+            "SELECT o.id, o.status, o.attempts, o.last_error, o.report_id, o.severity, o.source, o.created_at, o.done_at, "
             "       o.evidence_hash, o.next_attempt_at, p.payee_display, p.amount_paise "
             "FROM ledger_outbox o LEFT JOIN payments p ON p.id = o.payment_id ORDER BY o.id DESC LIMIT 50"
         ).fetchall()
@@ -205,6 +210,7 @@ def filings(session: dict = Depends(analyst)) -> dict:
             "lastError": r["last_error"],
             "reportId": r["report_id"],
             "severity": r["severity"],
+            "source": r["source"],
             "payee": r["payee_display"],
             "amount": rupees(r["amount_paise"]) if r["amount_paise"] else None,
             "evidenceHash": r["evidence_hash"],
@@ -214,3 +220,43 @@ def filings(session: dict = Depends(analyst)) -> dict:
         }
         for r in rows
     ]}
+
+
+# ---------------------------------------------------------------- sandbox (Module 3b)
+@router.get("/sandbox")
+def sandboxed_sessions(session: dict = Depends(analyst)) -> dict:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT s.id, s.sandboxed_at, s.revoked_at, s.ip, u.display_name, "
+            "       count(p.id) AS attempts, COALESCE(sum(p.amount_paise), 0) AS total, "
+            "       count(DISTINCT p.payee_hash) AS payees "
+            "FROM sessions s JOIN users u ON u.id = s.user_id "
+            "LEFT JOIN payments p ON p.session_id = s.id AND p.status = 'sandboxed' "
+            "WHERE s.sandboxed_at IS NOT NULL GROUP BY s.id, u.display_name ORDER BY s.sandboxed_at DESC LIMIT 50"
+        ).fetchall()
+    return {"sessions": [
+        {
+            "id": str(r["id"]),
+            "customer": _mask(r["display_name"]),
+            "sandboxedAt": r["sandboxed_at"].isoformat(),
+            "revoked": r["revoked_at"] is not None,
+            "ip": r["ip"],
+            "attempts": r["attempts"],
+            "attempted": rupees(int(r["total"])),
+            "payees": r["payees"],
+        }
+        for r in rows
+    ]}
+
+
+@router.post("/sessions/{session_id}/revoke")
+def revoke_sandboxed(session_id: uuid.UUID, session: dict = Depends(elevated)) -> dict:
+    """End a sandboxed session once enough has been learned from it."""
+    with db.connect() as conn, conn.transaction():
+        row = conn.execute("UPDATE sessions SET revoked_at = now() WHERE id = %s AND sandboxed_at IS NOT NULL "
+                           "AND revoked_at IS NULL RETURNING id", (session_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "No active sandboxed session with that id")
+        audit.enqueue(conn, "SANDBOX_SESSION_REVOKED", {"sessionId": str(session_id), "analystId": str(session["user_id"])})
+    return {"revoked": True}
+

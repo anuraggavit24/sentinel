@@ -6,6 +6,9 @@ import {
   getFilings,
   getOpsStatus,
   getQueue,
+  getSandboxSessions,
+  revokeSandboxSession,
+  type SandboxSession,
   type Filing,
   type OpsStatus,
   type QueueItem,
@@ -33,7 +36,9 @@ function ago(iso: string): string {
 export default function Ops() {
   const [status, setStatus] = useState<OpsStatus | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueTotal, setQueueTotal] = useState(0);
   const [filings, setFilings] = useState<Filing[]>([]);
+  const [sandbox, setSandbox] = useState<SandboxSession[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [severity, setSeverity] = useState<Severity>("MEDIUM");
@@ -42,10 +47,12 @@ export default function Ops() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [s, q, f] = await Promise.all([getOpsStatus(), getQueue(), getFilings()]);
+    const [s, q, f, sb] = await Promise.all([getOpsStatus(), getQueue(), getFilings(), getSandboxSessions()]);
     setStatus(s);
     setQueue(q.payments);
+    setQueueTotal(q.total);
     setFilings(f.filings);
+    setSandbox(sb.sessions);
   }, []);
 
   useEffect(() => {
@@ -101,7 +108,7 @@ export default function Ops() {
         )}
       </div>
 
-      <h3>Held payments ({queue.length})</h3>
+      <h3>Held payments ({queueTotal > queue.length ? `oldest ${queue.length} of ${queueTotal}` : queue.length})</h3>
       {queue.length === 0 && <p className="muted">Nothing waiting for review.</p>}
       <ul className="queue">
         {queue.map((item) => (
@@ -118,6 +125,7 @@ export default function Ops() {
               )}
               {item.otherCustomers7d > 0 && <span className="pill warn">{item.otherCustomers7d} other customer(s) tried this payee</span>}
               {item.coaching && <span className="pill warn">coaching signals</span>}
+              {item.scamPattern && <span className="pill bad">Customer described a scam</span>}
             </button>
             {open === item.id && (
               <div className="queue-body">
@@ -128,6 +136,14 @@ export default function Ops() {
                     </li>
                   ))}
                 </ul>
+                {item.stepUp && (
+                  <p className="small" data-testid="stepup-answers">
+                    Customer step-up: on a call <strong>{item.stepUp.answers.onCall ? "yes" : "no"}</strong> · promised something{" "}
+                    <strong>{item.stepUp.answers.promised ? "yes" : "no"}</strong> · knows the payee{" "}
+                    <strong>{item.stepUp.answers.knowsPayee ? "yes" : "no"}</strong>
+                    {item.stepUp.blockers.length > 0 && <> · held because {item.stepUp.blockers.join("; ")}</>}
+                  </p>
+                )}
                 <p className="muted small">
                   Payee ref <code>{item.payeeRef}</code> · ledger {item.consortium?.status ?? "not asked"}
                   {item.consortium?.reports?.length ? ` · ${item.consortium.reports.length} report(s)` : ""}
@@ -166,6 +182,36 @@ export default function Ops() {
         ))}
       </ul>
 
+      <h3>Sandboxed sessions ({sandbox.filter((x) => !x.revoked).length} active)</h3>
+      {sandbox.length === 0 && <p className="muted">No suspected takeovers.</p>}
+      <table className="filings" data-testid="sandbox">
+        <tbody>
+          {sandbox.map((x) => (
+            <tr key={x.id} data-testid="sandbox-session">
+              <td>
+                {x.customer} · since {new Date(x.sandboxedAt).toLocaleTimeString()}
+              </td>
+              <td>
+                {x.attempts} attempt(s), {x.attempted} to {x.payees} payee(s)
+              </td>
+              <td>
+                {x.revoked ? (
+                  <span className="pill">ended</span>
+                ) : (
+                  <button
+                    disabled={busy || !elevated}
+                    onClick={() => void act(() => revokeSandboxSession(x.id), "Sandboxed session ended.")}
+                    type="button"
+                  >
+                    End session
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
       <h3>Ledger filings</h3>
       {filings.length === 0 && <p className="muted">No reports filed yet.</p>}
       <table className="filings" data-testid="filings">
@@ -182,7 +228,7 @@ export default function Ops() {
               <td className="muted small">
                 {f.reportId ? <code title={f.reportId}>{f.reportId.slice(0, 12)}…</code> : f.lastError ?? ""}
               </td>
-              <td className="muted small">{f.severity}</td>
+              <td className="muted small">{f.source === "SANDBOX_CAPTURE" ? "sandbox capture" : "analyst"} · {f.severity}</td>
             </tr>
           ))}
         </tbody>

@@ -35,6 +35,9 @@ def world(monkeypatch):
     monkeypatch.setattr(settings, "LEDGER_URL", "")
     monkeypatch.setattr(payments, "ist_hour", lambda: 14)
     with TestClient(main.app) as customer:
+        # The queue shows the oldest 100: clear held payments left by earlier tests so each test sees its own.
+        with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+            conn.execute("UPDATE payments SET status = 'rejected' WHERE status = 'held'")
         analyst = TestClient(main.app)
         register(customer, "cust")
         name, auth = register(analyst, "anal")

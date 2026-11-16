@@ -173,6 +173,12 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 41 | Customer data on a shared ledger | Other banks (and the Regulator) read the ledger | The case record stays in our database; only its SHA-256 goes on the ledger as evidence | `test_reject_and_report_files_a_new_report_with_the_payees_hash` |
 | 42 | A read credential that can write | A leaked read token filing reports | Separate `LEDGER_WRITE_TOKEN`; without it the write routes do not exist | `ledger-gateway/test/writes.test.ts` |
 | 43 | An invalid transaction counted as filed | A commit rejected by the peers (e.g. a read conflict) | `CommitError` is checked first and retried, never reported as success | `fabric.test.ts`: transaction marked invalid |
+| 44 | A coached victim answers "no call" | Scammers tell victims what to say | Answers can only make it stricter: observed coaching signals or a CONFIRMED ledger payee always leave it to an analyst | `test_answers_never_override_observed_coaching`, `test_a_confirmed_mule_payee_needs_an_analyst` |
+| 45 | Retrying the step-up with different answers | The scammer on the line coaches a second try | One attempt per payment; a scam answer flags it to the top of the analyst queue | `test_one_attempt_only`, `test_flagged_step_ups_come_first_in_the_analyst_queue` |
+| 46 | Telling an attacker they were caught | A takeover session that sees "blocked" tries elsewhere | Sandbox: the session sees "Allowed" and a falling fake balance; nothing moves; the real owner on their own session sees "Blocked: someone else was using your account" | `test_takeover_session_sees_success_but_nothing_moves` |
+| 47 | A sandboxed session acting on real payments | Confirming or cancelling the owner's held payments from the attacker's session | Step-up and cancel answer 404 in a sandboxed session | `test_sandboxed_session_cannot_step_up_or_cancel_anything_real` |
+| 48 | Honeypot captures poisoning the consortium | One bank's sandbox flagging innocent payees everywhere | Captures are filed as SANDBOX_CAPTURE, capped LOW and weight 0 by the chaincode; they only corroborate other banks' reports | `test_sandbox_captures_go_to_the_ledger_as_low_weight_reports`, chaincode contract test |
+| 49 | Schema replay broke on newer rows (found in 3b) | The whole schema is replayed on upgrade; an older copy of a CHECK constraint failed on `sandboxed` rows and would have broken the next upgrade | One definition per constraint, with its final values | `test_replaying_the_schema_keeps_rows_of_every_status` (fails with the old copy) |
 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
@@ -513,20 +519,34 @@ LEDGER_UPI=<confirmed UPI from ledger_smoke.sh> npm run e2e:ledger
 | Gateway HTTP | `writes.test.ts` | Separate write token; read token gets 403; validation before Fabric; 422 for chaincode refusals |
 | API | `test_ops.py` (27) | Roles, elevation, separation of duties, single decision, release/reject effects, the outbox: report / confirm / already ours / race / outage / refusal / lease |
 | Browser | `ops.e2e.mjs` (two people, two passkeys) | Queue, passkey gate, reject + report with the filing reaching the ledger, release, customer's view, own payment hidden |
-| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement: 8/8 live (see below) |
+| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement. **Not yet run by me**: the main risk is endorsement discovery (the Gateway must find a second bank's peer by itself) |
 
-### Not in 3a (next: 3b)
-- The customer's own step-up (confirm a held payment with a passkey and a "were you asked to do this?" check).
-- The sandbox (a fake balance for a suspected account takeover).
+### Not in 3a
 - Disputing or retracting reports from the dashboard.
 
+## Phase 3 · Module 3b: the customer's step-up, and the sandbox
 
-### Live result: Module 3a writes (Fabric 2.5.16 via Fablo, 16 Nov 2026)
+**Step-up.** A held (step-up) payment can be confirmed by the customer: a fresh passkey check plus
+three questions. Honest answers release it ("Confirmed by you"). "Someone on a call asked me" or "I was
+promised a refund / prize / job, or told my account is at risk" keeps it held, shows a scam warning,
+and puts it at the top of the analyst queue. Answers never override what was observed: coaching
+signals during the payment, or a CONFIRMED mule on the ledger, always leave the decision to an analyst.
+One attempt per payment. The customer can also cancel ("Cancelled by you").
 
-`./scripts/ops_smoke.sh`: 8/8 passed. The Gateway gathered approvals from two banks on its own (no peers named by us).
+**Sandbox.** A takeover-grade decision (SIM swap or failed integrity, on a new device, score ≥ 70)
+sandboxes the **session**: from then on every payment from it is shown as "Allowed" and the session
+sees its balance fall, but nothing is sent. Each payee it tries is filed to the ledger as a
+`SANDBOX_CAPTURE` report (capped LOW, weight 0 on its own: it corroborates, it cannot flag a payee by
+itself). The real owner, on their own session, sees the true balance and "Blocked: someone else was
+using your account". Analysts see sandboxed sessions in Fraud ops and can end them.
 
-| Step | Result |
-|---|---|
-| BankA files a new report through the outbox | committed, PENDING, weight 0.25 (~5.7 s queue-to-commit incl. the 3 s drainer interval) |
-| Same payee filed again | `already_ours`, same report id, nothing written |
-| BankB reports first, BankA's filing follows | BankA confirms it -> CONFIRMED, weight 1, two non-sandbox banks |
+Demo: in the operator console set "SIM changed: 2 h" and "New device", send ₹45,000: the result says
+"Allowed", the analyst view says SANDBOX, the balance drops, and Fraud ops lists the session and the
+sandbox capture filing.
+
+Tests: `api/tests/test_stepup.py` (15) and `web/e2e/stepup.e2e.mjs` (18 checks: confirm, scam answer,
+one attempt, cancel, sandbox illusion and fake balance, analyst queue order, sandbox capture filed,
+ending the session signs the attacker out). The browser test found a bug the API tests could not: the
+step-up box kept the previous payment's result when a second held payment came in (fixed by keying the
+component to the payment).
+

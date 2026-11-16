@@ -14,12 +14,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import audit, db, ledger, settings
-from .auth_deps import current_session
+from . import audit, db, ledger, ledger_outbox, settings
+from .auth_deps import current_session, now
 from .risk import behaviour as bh
 from .risk import fri
 from .risk.normalize import PayeeError, normalise
-from .risk.rules import ALLOW, BEHAVIOUR_MEDIUM, TRUST_AGE_HOURS, TRUST_MIN_PAISE, Signals, rupees, score
+from .risk.rules import ALLOW, BEHAVIOUR_MEDIUM, SANDBOX, TRUST_AGE_HOURS, TRUST_MIN_PAISE, Signals, rupees, score
 
 router = APIRouter()
 IST = timezone(timedelta(hours=5, minutes=30))  # fixed offset: India has no daylight saving
@@ -257,7 +257,12 @@ def score_payment(
             consortium_banks=max((r["nonSandboxBanks"] for r in consortium.reports), default=0),
         )
         decision = score(signals)
-        status = "completed" if decision.band == ALLOW else "held"  # Module 3 acts on held payments
+        # Sandbox (Module 3b): a takeover-grade decision, or any payment in a session already sandboxed.
+        # The session keeps seeing "success" and a falling fake balance; no money moves; the payees it
+        # tries to pay are captured for the consortium ledger as SANDBOX_CAPTURE reports.
+        already_sandboxed = session["sandboxed_at"] is not None
+        sandboxed = decision.band == SANDBOX or already_sandboxed
+        status = "sandboxed" if sandboxed else ("completed" if decision.band == ALLOW else "held")
         # Only a meaningful payment made without coaching signals can later make this payee trusted.
         trust_eligible = status == "completed" and not decision.coaching_signals and paise >= TRUST_MIN_PAISE
         snapshot = {
@@ -283,7 +288,9 @@ def score_payment(
             # Never learn from typing that already looks like someone else: otherwise an attacker whose
             # payments slip through would slowly teach the profile their own rhythm.
             why.append("typing did not match the profile")
-        if status != "completed":
+        if sandboxed:
+            why.append("sandboxed: suspected account takeover")
+        elif status != "completed":
             why.append("payment held for checks")
         if decision.coaching_signals:
             why.append("coaching signals were on")
@@ -296,11 +303,12 @@ def score_payment(
         payment_id = uuid.uuid4()
         stored = {
             "paymentId": str(payment_id),
-            "status": status,
+            # A sandboxed session must not learn it has been caught: it sees an ordinary success.
+            "status": "completed" if sandboxed else status,
             "payee": payee.display,
             "amount": rupees(paise),
-            "band": decision.band,
-            "reasons": decision.customer_reasons(),
+            "band": ALLOW if sandboxed else decision.band,
+            "reasons": [] if sandboxed else decision.customer_reasons(),
             "engine": "rules-v3 + behaviour robust-z + consortium ledger",
             "analyst": {
                 "score": decision.score,
@@ -308,6 +316,12 @@ def score_payment(
                 "takeoverSignals": decision.takeover_signals,
                 "coachingSignals": decision.coaching_signals,
                 "signals": snapshot,
+                "sandbox": {
+                    "active": sandboxed,
+                    "why": None if not sandboxed else (
+                        "session already sandboxed" if already_sandboxed else "takeover signals on a new device"),
+                    "realBand": decision.band,
+                },
             },
         }
         conn.execute(
@@ -340,6 +354,21 @@ def score_payment(
                 "consortium": consortium.status,
             },
         )
+        if sandboxed:
+            if not already_sandboxed:
+                conn.execute("UPDATE sessions SET sandboxed_at = now() WHERE id = %s", (session["session_id"],))
+                audit.enqueue(conn, "SESSION_SANDBOXED", {"sessionId": str(session["session_id"]),
+                                                          "userId": str(user_id), "paymentId": str(payment_id)})
+            if settings.LEDGER_URL and settings.LEDGER_WRITE_TOKEN:
+                # The chaincode caps sandbox captures at LOW and gives them weight 0 on their own: one bank's
+                # honeypot can never flag a payee across the consortium, but it corroborates other reports.
+                ledger_outbox.enqueue(
+                    conn, payment_id=payment_id, id_hash=payee_hash, id_type=payee.type, severity="LOW",
+                    source="SANDBOX_CAPTURE", requested_by=None,
+                    evidence={"paymentId": str(payment_id), "capturedAt": now().isoformat(), "score": decision.score,
+                              "reasonCodes": [r.code for r in decision.reasons], "payeeType": payee.type,
+                              "bank": settings.LEDGER_MSP, "kind": "sandbox"},
+                )
         if consortium.breaker_opened:
             # Recorded once per outage, not once per payment: an outage is when the ledger stops protecting.
             audit.enqueue(conn, "LEDGER_DEGRADED", {"error": consortium.error})
@@ -347,30 +376,57 @@ def score_payment(
     return present(stored, replayed=False)
 
 
+OPENING_BALANCE_PAISE = 5_00_000_00  # demo account balance
+
+
 @router.get("/payments")
 def list_payments(session: dict = Depends(current_session)) -> dict:
+    in_sandbox = session["sandboxed_at"] is not None
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT id, payee_type, payee_display, amount_paise, score, band, status, review_decision, created_at "
-            "FROM payments WHERE user_id = %s ORDER BY created_at DESC LIMIT 20",
+            "SELECT id, session_id, payee_type, payee_display, amount_paise, score, band, status, review_decision, "
+            "step_up_flagged, created_at FROM payments WHERE user_id = %s ORDER BY created_at DESC LIMIT 20",
             (session["user_id"],),
         ).fetchall()
-    return {
-        "payments": [
-            {
-                "id": str(r["id"]),
-                "payeeType": r["payee_type"],
-                "payee": r["payee_display"],
-                "amount": rupees(r["amount_paise"]),
-                "band": r["band"],
-                "status": r["status"],
-                "reviewed": r["review_decision"],  # None | release | reject (Module 3a)
-                **({"score": r["score"]} if settings.SHOW_ANALYST_VIEW else {}),
-                "createdAt": r["created_at"].isoformat(),
-            }
-            for r in rows
-        ]
-    }
+
+    def shown(r) -> tuple[str, str]:
+        if r["status"] != "sandboxed":
+            return r["status"], r["band"]
+        # The sandboxed session keeps its illusion; the real owner, on their own session, is told.
+        if in_sandbox and r["session_id"] == session["session_id"]:
+            return "completed", "allow"
+        return "blocked_takeover", r["band"]
+
+    out = []
+    for r in rows:
+        status, band = shown(r)
+        out.append({
+            "id": str(r["id"]),
+            "payeeType": r["payee_type"],
+            "payee": r["payee_display"],
+            "amount": rupees(r["amount_paise"]),
+            "band": band,
+            "status": status,
+            "reviewed": r["review_decision"],  # None | release | reject | customer_confirmed | customer_cancelled
+            "stepUpFlagged": r["step_up_flagged"],
+            **({"score": r["score"]} if settings.SHOW_ANALYST_VIEW and not in_sandbox else {}),
+            "createdAt": r["created_at"].isoformat(),
+        })
+    return {"payments": out}
+
+
+@router.get("/account")
+def account(session: dict = Depends(current_session)) -> dict:
+    """Demo balance. In a sandboxed session the sandboxed 'payments' are subtracted too, so the session
+    sees money leave; the real balance (any other session) is untouched."""
+    with db.connect() as conn:
+        real = conn.execute("SELECT COALESCE(sum(amount_paise), 0) AS s FROM payments WHERE user_id = %s AND status = 'completed'",
+                            (session["user_id"],)).fetchone()["s"]
+        fake = 0
+        if session["sandboxed_at"] is not None:
+            fake = conn.execute("SELECT COALESCE(sum(amount_paise), 0) AS s FROM payments WHERE session_id = %s AND status = 'sandboxed'",
+                                (session["session_id"],)).fetchone()["s"]
+    return {"balance": rupees(OPENING_BALANCE_PAISE - int(real) - int(fake))}
 
 
 @router.get("/ledger/status")

@@ -90,7 +90,10 @@ def test_injected_takeover_signals_send_payment_to_sandbox(client):
     set_signals(client, simSwapHoursAgo=2, newDevice=True)
     r = pay(client, amount="45000", payee_type="ACCOUNT", payee={"ifsc": "UTIB0000789", "account": "917020001234"})
     body = r.json()
-    assert body["band"] == "sandbox" and body["status"] == "held" and body["analyst"]["takeoverSignals"]
+    # Module 3b: the session sees an ordinary success; the truth is in the analyst view and the database.
+    assert body["band"] == "allow" and body["status"] == "completed" and body["reasons"] == []
+    assert body["analyst"]["sandbox"] == {"active": True, "why": "takeover signals on a new device", "realBand": "sandbox"}
+    assert body["analyst"]["takeoverSignals"]
     assert {"RECENT_SIM_SWAP", "NEW_DEVICE", "NEW_PAYEE"} <= set(codes(r))
     assert body["analyst"]["signals"]["injected"]["simSwapHoursAgo"] == 2
 
@@ -255,7 +258,7 @@ def test_attacker_typing_during_takeover_never_trains_the_profile(client):
     enrol(client)
     set_signals(client, simSwapHoursAgo=1, newDevice=True)
     r = pay_b(client, "45000", "mule.x@okaxis", typing(dwell=210, flight=430, fill=3500, speed=3.2)).json()
-    assert r["band"] == "sandbox"
+    assert r["analyst"]["sandbox"]["realBand"] == "sandbox"
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         clean = conn.execute("SELECT clean FROM behaviour_samples WHERE payment_id = %s", (r["paymentId"],)).fetchone()[0]
     assert clean is False

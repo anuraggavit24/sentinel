@@ -42,14 +42,6 @@ let r = await send(async () => { await page.getByLabel("Pay to").selectOption("U
 ok(r.band === "Allowed" && r.score === 15 && r.reasons.some((t) => t.includes("First payment")), `small first payment allowed (score ${r.score})`);
 ok(!(await page.locator(".reasons.plain").innerText()).includes("+"), "customer reasons show no points");
 
-// 2. Account takeover: SIM swapped 2 h ago + new device, large payment to a new account
-await page.getByLabel("SIM changed").selectOption("2");
-await page.getByLabel("New device").check();
-await page.waitForTimeout(400);
-r = await send(async () => { await page.getByLabel("Pay to").selectOption("ACCOUNT"); await page.getByLabel("IFSC").fill("utib0000789"); await page.getByLabel("Account number").fill("917020001234"); }, "45000");
-ok(r.band.startsWith("Held") && r.score >= 70, `takeover signals -> sandbox (score ${r.score})`);
-ok(r.reasons.some((t) => t.includes("SIM was changed")) && r.reasons.some((t) => t.includes("device not seen")), "takeover reasons explained");
-
 // 3. Coached customer: on a call with screen sharing, large payment to a new UPI
 await page.getByRole("button", { name: "Reset signals" }).click();
 await page.getByLabel("Phone call active").check();
@@ -90,6 +82,15 @@ await page.getByLabel("Amount (₹)").fill("100");
 await page.getByRole("button", { name: "Check and send" }).click();
 await page.locator(".error").waitFor();
 ok((await page.locator(".error").innerText()).includes("IFSC"), "invalid IFSC explained");
+
+// 6. Account takeover (last: from here on this session is sandboxed): SIM swapped 2 h ago + new device, large payment to a new account
+await page.getByLabel("SIM changed").selectOption("2");
+await page.getByLabel("New device").check();
+await page.waitForTimeout(400);
+r = await send(async () => { await page.getByLabel("Pay to").selectOption("ACCOUNT"); await page.getByLabel("IFSC").fill("utib0000789"); await page.getByLabel("Account number").fill("917020001234"); }, "45000");
+// Module 3b: the takeover session is shown an ordinary success while nothing is sent (the sandbox).
+ok(r.band === "Allowed" && r.score >= 70 && (await page.getByTestId("sandbox-line").isVisible()), `takeover signals -> sandbox, shown as "Allowed" (score ${r.score})`);
+ok(r.reasons.some((t) => t.includes("SIM was changed")) && r.reasons.some((t) => t.includes("device not seen")), "takeover reasons explained");
 
 ok((await page.locator("tbody tr").count()) === 7, "7 payments in history");
 await page.getByRole("button", { name: "Passkeys and sessions" }).click();

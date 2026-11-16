@@ -144,6 +144,7 @@ export interface AnalystView {
   reasons: AnalystReason[];
   takeoverSignals: boolean;
   coachingSignals: boolean;
+  sandbox?: { active: boolean; why: string | null; realBand: Band };
   signals: {
     consortium: ConsortiumView;
     friCategory: string | null;
@@ -182,7 +183,8 @@ export interface PaymentRow {
   score?: number;
   band: Band;
   status: string;
-  reviewed: "release" | "reject" | null;
+  reviewed: "release" | "reject" | "customer_confirmed" | "customer_cancelled" | null;
+  stepUpFlagged?: boolean;
   createdAt: string;
 }
 
@@ -299,6 +301,8 @@ export interface QueueItem {
   coaching: boolean;
   consortium: ConsortiumView | null;
   otherCustomers7d: number;
+  stepUp: { answers: StepUpAnswers; released: boolean; blockers: string[]; at: string } | null;
+  scamPattern: boolean;
 }
 
 export interface Filing {
@@ -308,6 +312,7 @@ export interface Filing {
   lastError: string | null;
   reportId: string | null;
   severity: string;
+  source: "ANALYST" | "CUSTOMER_COMPLAINT" | "SANDBOX_CAPTURE";
   payee: string | null;
   amount: string | null;
   evidenceHash: string;
@@ -317,7 +322,7 @@ export interface Filing {
 }
 
 export const getOpsStatus = () => call<OpsStatus>("/ops/status");
-export const getQueue = () => call<{ payments: QueueItem[] }>("/ops/queue");
+export const getQueue = () => call<{ total: number; payments: QueueItem[] }>("/ops/queue");
 export const getFilings = () => call<{ filings: Filing[] }>("/ops/filings");
 
 /** Analyst actions need a fresh passkey check (Windows Hello prompt); it lasts a few minutes. */
@@ -331,3 +336,40 @@ export const decidePayment = (
   id: string,
   body: { decision: "release" | "reject"; note: string; report: boolean; severity: "LOW" | "MEDIUM" | "HIGH" },
 ) => post<{ status: string; reported: boolean; outboxId: number | null }>(`/ops/payments/${id}/decision`, body);
+
+// ---------------------------------------------------------------- Module 3b: step-up and sandbox
+export interface StepUpAnswers {
+  onCall: boolean;
+  promised: boolean;
+  knowsPayee: boolean;
+}
+
+export const getAccount = () => call<{ balance: string }>("/account");
+
+/** The customer confirms a held payment: passkey (Windows Hello) plus three questions. One attempt. */
+export async function confirmHeldPayment(paymentId: string, answers: StepUpAnswers) {
+  const { challengeId, options } = await post<Ceremony<PublicKeyCredentialRequestOptionsJSON>>(`/payments/${paymentId}/step-up/options`);
+  const credential = await startAuthentication({ optionsJSON: options });
+  return post<{ status: "completed" | "held"; message: string; warning?: string | null }>(`/payments/${paymentId}/step-up`, {
+    challengeId,
+    credential,
+    answers,
+  });
+}
+
+export const cancelHeldPayment = (paymentId: string) =>
+  post<{ status: "rejected"; message: string }>(`/payments/${paymentId}/cancel`);
+
+export interface SandboxSession {
+  id: string;
+  customer: string;
+  sandboxedAt: string;
+  revoked: boolean;
+  ip: string | null;
+  attempts: number;
+  attempted: string;
+  payees: number;
+}
+
+export const getSandboxSessions = () => call<{ sessions: SandboxSession[] }>("/ops/sandbox");
+export const revokeSandboxSession = (id: string) => post<{ revoked: boolean }>(`/ops/sessions/${id}/revoke`);
