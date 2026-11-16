@@ -9,6 +9,7 @@ import {
   scorePayment,
   type Band,
   type Decision,
+  type ConsortiumView,
   type DemoSignals,
   type PayeeType,
   type PaymentRow,
@@ -233,8 +234,9 @@ export default function SendMoney() {
                 {" · "}
                 {a.signals.behaviour.learned ? "added to your profile" : `not added to your profile (${a.signals.behaviour.notLearnedBecause})`}
               </p>
+              <ConsortiumLine c={a.signals.consortium} />
               <p className="muted small">
-                Engine: {decision.engine}. Consortium ledger: {a.signals.consortium}.
+                Engine: {decision.engine}.
                 {a.signals.operatorSignalsOn && " Device and telecom signals were set by the demo operator."}
               </p>
             </div>
@@ -353,6 +355,33 @@ export default function SendMoney() {
           </table>
         )}
       </section>
+    </div>
+  );
+}
+
+/** Analyst-only line describing the consortium ledger lookup for this payment. */
+function ConsortiumLine({ c }: { c: ConsortiumView }) {
+  const text =
+    c.status === "disabled"
+      ? "not connected (LEDGER_URL not set)"
+      : c.status === "unavailable"
+        ? `unavailable, scored without it (${c.error})`
+        : c.status === "clear"
+          ? `no reports about this payee (${c.latencyMs} ms)`
+          : `${c.reports?.length} report(s), max weight ${c.maxWeight?.toFixed(2)}${c.hardRule ? ", CONFIRMED" : ""} (${c.latencyMs} ms)`;
+  return (
+    <div className="muted small" data-testid="consortium-status">
+      Consortium ledger: {text}
+      {c.status === "hit" && (
+        <ul className="ledger-reports">
+          {c.reports?.map((r) => (
+            <li key={r.reportId}>
+              {r.status} · {r.severity} · reported by {r.reporterOrg} via {r.source.toLowerCase().replace(/_/g, " ")} ·{" "}
+              {r.nonSandboxBanks} non-sandbox bank(s) · weight {r.weight} · <code>{r.reportId.slice(0, 12)}</code>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

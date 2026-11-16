@@ -119,6 +119,24 @@ export interface AnalystReason extends Reason {
   points: number;
 }
 
+/** Slice 2c: what the consortium ledger said about this payee. */
+export interface ConsortiumView {
+  status: "disabled" | "clear" | "hit" | "unavailable";
+  maxWeight?: number;
+  hardRule?: boolean;
+  latencyMs?: number;
+  error?: string;
+  reports?: {
+    reportId: string;
+    status: string;
+    severity: string;
+    source: string;
+    reporterOrg: string;
+    nonSandboxBanks: number;
+    weight: number;
+  }[];
+}
+
 /** Only present when the server runs with SHOW_ANALYST_VIEW=1 (demo / fraud-ops). */
 export interface AnalystView {
   score: number;
@@ -126,7 +144,7 @@ export interface AnalystView {
   takeoverSignals: boolean;
   coachingSignals: boolean;
   signals: {
-    consortium: string;
+    consortium: ConsortiumView;
     friCategory: string | null;
     injected: DemoSignals | null;
     operatorSignalsOn: boolean;

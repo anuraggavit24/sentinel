@@ -30,3 +30,10 @@ SHOW_ANALYST_VIEW = os.environ.get("SHOW_ANALYST_VIEW", "0") == "1"
 STUDY_ENABLED = os.environ.get("STUDY_ENABLED", "0") == "1"
 # Minimum gap between a volunteer's study sessions, so genuine attempts include day-to-day drift.
 STUDY_SESSION_GAP_HOURS = float(os.environ.get("STUDY_SESSION_GAP_HOURS", "4"))
+# Consortium ledger bridge (slice 2c). Empty URL = not connected; payments then score without it.
+LEDGER_URL = os.environ.get("LEDGER_URL", "").rstrip("/")
+LEDGER_TOKEN = os.environ.get("LEDGER_TOKEN", "")
+# A payment waits at most this long for the ledger, then scores without it (fail-open, recorded).
+LEDGER_TIMEOUT_MS = int(os.environ.get("LEDGER_TIMEOUT_MS", "800"))
+# During a consortium key rotation, payees are also looked up under the previous key's hash.
+PAYEE_HMAC_KEY_PREVIOUS = os.environ.get("PAYEE_HMAC_KEY_PREVIOUS", "")

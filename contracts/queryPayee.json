@@ -1,0 +1,173 @@
+{
+  "clear": {
+    "idHashes": [
+      "913a4cb91be20332f3559f8070255d7ac3e6228bb423f4441551d3f783e7d4f4"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "913a4cb91be20332f3559f8070255d7ac3e6228bb423f4441551d3f783e7d4f4"
+      ],
+      "maxWeight": 0,
+      "reports": []
+    }
+  },
+  "pendingOneBank": {
+    "idHashes": [
+      "62a2fed3d6e08c44835fce71f02210b1ddabfb066e39edf1e6c261988f824dd3"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "62a2fed3d6e08c44835fce71f02210b1ddabfb066e39edf1e6c261988f824dd3"
+      ],
+      "maxWeight": 0.25,
+      "reports": [
+        {
+          "hardRuleEligible": false,
+          "idHash": "62a2fed3d6e08c44835fce71f02210b1ddabfb066e39edf1e6c261988f824dd3",
+          "keyVersion": 1,
+          "nonSandboxBanks": 1,
+          "reportId": "tx-pending",
+          "reporterOrg": "BankAMSP",
+          "severity": "HIGH",
+          "source": "ANALYST",
+          "status": "PENDING",
+          "weight": 0.25
+        }
+      ]
+    }
+  },
+  "sandboxOnly": {
+    "idHashes": [
+      "b7ad567477c83756aab9a542b2be04f77dbae25115d85f22070d74d8cc4779dc"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "b7ad567477c83756aab9a542b2be04f77dbae25115d85f22070d74d8cc4779dc"
+      ],
+      "maxWeight": 0,
+      "reports": [
+        {
+          "hardRuleEligible": false,
+          "idHash": "b7ad567477c83756aab9a542b2be04f77dbae25115d85f22070d74d8cc4779dc",
+          "keyVersion": 1,
+          "nonSandboxBanks": 0,
+          "reportId": "tx-sandbox",
+          "reporterOrg": "BankAMSP",
+          "severity": "LOW",
+          "source": "SANDBOX_CAPTURE",
+          "status": "PENDING",
+          "weight": 0
+        }
+      ]
+    }
+  },
+  "confirmed": {
+    "idHashes": [
+      "9599915bd8cd62b6b42e6c37b5b681a76991a7c5be1fde9971278ce65b99d550"
+    ],
+    "answer": {
+      "hardRuleEligible": true,
+      "idHashes": [
+        "9599915bd8cd62b6b42e6c37b5b681a76991a7c5be1fde9971278ce65b99d550"
+      ],
+      "maxWeight": 1,
+      "reports": [
+        {
+          "hardRuleEligible": true,
+          "idHash": "9599915bd8cd62b6b42e6c37b5b681a76991a7c5be1fde9971278ce65b99d550",
+          "keyVersion": 1,
+          "nonSandboxBanks": 2,
+          "reportId": "tx-confirmed",
+          "reporterOrg": "BankAMSP",
+          "severity": "HIGH",
+          "source": "ANALYST",
+          "status": "CONFIRMED",
+          "weight": 1
+        }
+      ]
+    }
+  },
+  "disputedAfterConfirmed": {
+    "idHashes": [
+      "ed87b96031b34ce1daad810cd4bfae6179c40e649f54d0ee4a0fe2e22b94b14e"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "ed87b96031b34ce1daad810cd4bfae6179c40e649f54d0ee4a0fe2e22b94b14e"
+      ],
+      "maxWeight": 0.5,
+      "reports": [
+        {
+          "hardRuleEligible": false,
+          "idHash": "ed87b96031b34ce1daad810cd4bfae6179c40e649f54d0ee4a0fe2e22b94b14e",
+          "keyVersion": 1,
+          "nonSandboxBanks": 2,
+          "reportId": "tx-disputed",
+          "reporterOrg": "BankBMSP",
+          "severity": "HIGH",
+          "source": "ANALYST",
+          "status": "DISPUTED",
+          "weight": 0.5
+        }
+      ]
+    }
+  },
+  "retracted": {
+    "idHashes": [
+      "3c194721fca71e1e95f19cce208f420da03de752e42238b2eee7c26913c23772"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "3c194721fca71e1e95f19cce208f420da03de752e42238b2eee7c26913c23772"
+      ],
+      "maxWeight": 0,
+      "reports": [
+        {
+          "hardRuleEligible": false,
+          "idHash": "3c194721fca71e1e95f19cce208f420da03de752e42238b2eee7c26913c23772",
+          "keyVersion": 1,
+          "nonSandboxBanks": 1,
+          "reportId": "tx-retracted",
+          "reporterOrg": "BankCMSP",
+          "severity": "HIGH",
+          "source": "ANALYST",
+          "status": "RETRACTED",
+          "weight": 0
+        }
+      ]
+    }
+  },
+  "keyRotationOldHashHit": {
+    "idHashes": [
+      "575efc90294accb17a4d7715854abcaf1882407ddf438963bcf02e91be07907a",
+      "845110cd5045beb49cfca87d5b6880dea580b64947f24e606ff8ab82def20d05"
+    ],
+    "answer": {
+      "hardRuleEligible": false,
+      "idHashes": [
+        "575efc90294accb17a4d7715854abcaf1882407ddf438963bcf02e91be07907a",
+        "845110cd5045beb49cfca87d5b6880dea580b64947f24e606ff8ab82def20d05"
+      ],
+      "maxWeight": 0.25,
+      "reports": [
+        {
+          "hardRuleEligible": false,
+          "idHash": "845110cd5045beb49cfca87d5b6880dea580b64947f24e606ff8ab82def20d05",
+          "keyVersion": 1,
+          "nonSandboxBanks": 1,
+          "reportId": "tx-rotated",
+          "reporterOrg": "BankAMSP",
+          "severity": "HIGH",
+          "source": "ANALYST",
+          "status": "PENDING",
+          "weight": 0.25
+        }
+      ]
+    }
+  }
+}

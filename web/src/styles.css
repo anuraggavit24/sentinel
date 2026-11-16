@@ -91,3 +91,7 @@ code { background: #eef2f7; padding: 1px 6px; border-radius: 4px; font-size: 13p
   border-radius: 10px;
   user-select: all;
 }
+
+/* Consortium ledger reports in the analyst view */
+.ledger-reports { margin: 4px 0 0; padding-left: 1.1rem; }
+.ledger-reports code { font-size: 12px; }

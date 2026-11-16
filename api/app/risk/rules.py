@@ -18,6 +18,8 @@ TRUST_MIN_PAISE = 500_00          # a payee is trusted only after a completed pa
 TRUST_AGE_HOURS = 24              # ... made more than 24 hours ago, with no coaching signals
 SPLIT_TOTAL_PAISE = 10_000_00     # several payments to one untrusted payee adding up to ₹10,000 in 24 h
 UNTRUSTED_TOTAL_PAISE = 50_000_00 # ₹50,000 in 24 h to payees you do not trust yet
+CONSORTIUM_CONFIRMED_POINTS = 50   # a CONFIRMED report on the ledger: held for review whatever else
+CONSORTIUM_WEIGHT_POINTS = 40      # otherwise points = weight x 40 (pending 0.25 -> 10, disputed 0.5 -> 20)
 BEHAVIOUR_MEDIUM = 0.3
 BEHAVIOUR_HIGH = 0.5
 
@@ -50,6 +52,11 @@ class Signals:
     # True when the user has a behaviour profile but this payment came without usable behaviour data
     # (everything pasted, a scripted API call, or a rejected payload). Must not be a free pass.
     behaviour_missing: bool = False
+    # Consortium ledger (slice 2c). Weights come from the chaincode: sandbox-only reports weigh 0, so one
+    # bank's honeypot cannot get an innocent payee blocked across the consortium.
+    consortium_weight: float = 0.0
+    consortium_confirmed: bool = False
+    consortium_banks: int = 0              # most non-sandbox banks behind any single report
 
 
 @dataclass
@@ -57,7 +64,7 @@ class Reason:
     code: str
     points: int
     text: str                       # analyst wording: may contain details a customer must not see
-    group: str                      # TRANSACTION | DEVICE | COACHING | TELECOM
+    group: str                      # TRANSACTION | DEVICE | COACHING | TELECOM | CONSORTIUM
     customer_code: str = ""
     customer_text: str = ""
 
@@ -160,6 +167,27 @@ def score(s: Signals) -> Decision:
             customer_code="TELECOM_FLAG",
             customer_text="This payee's mobile number has been flagged by telecom fraud-risk signals",
         )
+    # ---- consortium ledger: other banks' fraud reports about this payee
+    # One customer wording for every kind of report, so the payment form cannot be used to tell a
+    # confirmed mule from a pending report (it still reveals "reported"; see security log row 30).
+    reported = dict(customer_code="PAYEE_REPORTED", customer_text="Banks have received fraud reports about this payee")
+    if s.consortium_confirmed:
+        add(
+            "CONSORTIUM_CONFIRMED",
+            CONSORTIUM_CONFIRMED_POINTS,
+            f"Payee is a CONFIRMED mule on the consortium ledger ({s.consortium_banks} banks, not sandbox-only)",
+            "CONSORTIUM",
+            **reported,
+        )
+    elif round(s.consortium_weight * CONSORTIUM_WEIGHT_POINTS) >= 1:
+        add(
+            "CONSORTIUM_REPORTED",
+            round(s.consortium_weight * CONSORTIUM_WEIGHT_POINTS),
+            f"Payee has an unconfirmed or disputed report on the consortium ledger (weight {s.consortium_weight:.2f})",
+            "CONSORTIUM",
+            **reported,
+        )
+
     takeover = False
     if s.sim_swap_hours_ago is not None and s.sim_swap_hours_ago < 72:
         recent = s.sim_swap_hours_ago < 24
@@ -232,7 +260,8 @@ def score(s: Signals) -> Decision:
     # Coached customers are real customers: they get a warning and step-up, never the sandbox.
     if total >= SANDBOX_AT and takeover and s.new_device:
         band = SANDBOX
-    elif total >= STEP_UP_AT:
+    elif total >= STEP_UP_AT or s.consortium_confirmed:
+        # A confirmed mule is never paid automatically, whatever the other signals add up to.
         band = STEP_UP
     else:
         band = ALLOW

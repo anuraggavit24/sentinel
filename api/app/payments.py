@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import audit, db, settings
+from . import audit, db, ledger, settings
 from .auth_deps import current_session
 from .risk import behaviour as bh
 from .risk import fri
@@ -157,6 +157,14 @@ def score_payment(
     except PayeeError as exc:
         raise HTTPException(422, str(exc)) from exc
     payee_hash = payee.id_hash(settings.PAYEE_HMAC_KEY)
+    # Consortium ledger, asked BEFORE taking the per-user lock: a slow network call must never hold it.
+    # During a key rotation the payee may still be filed under the previous key's hash, so ask for both.
+    id_hashes = [payee_hash]
+    if settings.PAYEE_HMAC_KEY_PREVIOUS:
+        previous_hash = payee.id_hash(settings.PAYEE_HMAC_KEY_PREVIOUS)
+        if previous_hash != payee_hash:
+            id_hashes.append(previous_hash)
+    consortium = ledger.query_payee(id_hashes)
     phone = payee.phone or (fri.phone_from_upi(payee.normalised) if payee.type == "UPI" else None)
     fingerprint = request_fingerprint(body)
     user_id = session["user_id"]
@@ -244,6 +252,9 @@ def score_payment(
             behaviour_anomaly=behaviour.anomaly,
             behaviour_features=[bh.FEATURES[f][3] for f in behaviour.top_features],
             behaviour_missing=enrolled and sample is None,
+            consortium_weight=consortium.max_weight,
+            consortium_confirmed=consortium.hard_rule,
+            consortium_banks=max((r["nonSandboxBanks"] for r in consortium.reports), default=0),
         )
         decision = score(signals)
         status = "completed" if decision.band == ALLOW else "held"  # Module 3 acts on held payments
@@ -261,7 +272,7 @@ def score_payment(
             "syncedPasskey": signals.synced_passkey,
             "injected": demo.model_dump() if settings.DEMO_SIGNALS else None,
             "operatorSignalsOn": settings.DEMO_SIGNALS and demo != DemoSignals(),
-            "consortium": "not connected yet (slice 2c)",
+            "consortium": consortium.snapshot(),
             "behaviour": {**behaviour.as_dict(), "enrolMin": bh.ENROL_MIN, "note": behaviour_note},
         }
         # Why this payment did or did not teach the profile, so a stuck "learning" status is explainable.
@@ -290,7 +301,7 @@ def score_payment(
             "amount": rupees(paise),
             "band": decision.band,
             "reasons": decision.customer_reasons(),
-            "engine": "rules-v2 + behaviour robust-z",
+            "engine": "rules-v3 + behaviour robust-z + consortium ledger",
             "analyst": {
                 "score": decision.score,
                 "reasons": [r.as_dict() for r in decision.reasons],
@@ -326,8 +337,12 @@ def score_payment(
                 "reasonCodes": [r.code for r in decision.reasons],
                 "payeeType": payee.type,
                 "amountPaise": paise,
+                "consortium": consortium.status,
             },
         )
+        if consortium.breaker_opened:
+            # Recorded once per outage, not once per payment: an outage is when the ledger stops protecting.
+            audit.enqueue(conn, "LEDGER_DEGRADED", {"error": consortium.error})
 
     return present(stored, replayed=False)
 
@@ -355,3 +370,10 @@ def list_payments(session: dict = Depends(current_session)) -> dict:
             for r in rows
         ]
     }
+
+
+@router.get("/ledger/status")
+def ledger_status(x_demo_operator_token: Optional[str] = Header(default=None)) -> dict:
+    """Operator view of the ledger bridge: reachable, which identity, and whether the breaker is open."""
+    check_operator_token(x_demo_operator_token)
+    return ledger.status()

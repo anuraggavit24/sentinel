@@ -42,7 +42,7 @@ async def lifespan(_: FastAPI):
     drainer.stop()
 
 
-app = FastAPI(title="Sentinel API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Sentinel API", version="0.5.0", lifespan=lifespan)
 app.include_router(payments.router)
 app.include_router(enrolment.router)
 app.include_router(research.router)

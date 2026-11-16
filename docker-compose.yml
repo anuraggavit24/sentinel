@@ -49,6 +49,9 @@ services:
       AUDIT_TOKEN: "demo-audit-token-change-me"  # must match audit-api
       STUDY_ENABLED: "1"  # volunteer typing study at http://localhost:5173/#/study (invites need the operator token)
       STUDY_SESSION_GAP_HOURS: "4"  # minimum gap between a volunteer's sessions
+      LEDGER_URL: http://ledger-gateway:8100  # consortium ledger bridge (slice 2c); empty = not connected
+      LEDGER_TOKEN: "demo-ledger-token-change-me"  # must match ledger-gateway
+      LEDGER_TIMEOUT_MS: "1000"  # a payment waits at most this long for the ledger, then scores without it
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -56,7 +59,38 @@ services:
         condition: service_healthy
       audit-api:
         condition: service_started
+      ledger-gateway:
+        condition: service_started
     mem_limit: 256m
+
+  # Read-only bridge to the Fabric ledger: only queryPayee and ping, as BankA's User1. Not published on
+  # the host; only the API can reach it, with the token. Starts even when Fablo is down (then the API's
+  # payments say "ledger unavailable" and score without it).
+  ledger-gateway:
+    build: ./ledger-gateway
+    container_name: sentinel-ledger-gateway
+    environment:
+      LEDGER_TOKEN: "demo-ledger-token-change-me"
+      MSP_ID: BankAMSP
+      PEER_ENDPOINT: host.docker.internal:7041  # BankA's peer as Fablo publishes it on this machine
+      PEER_HOST_ALIAS: peer0.banka.example.com  # the name on the peer's TLS certificate
+      MSP_DIR: /crypto/banka/users/User1@banka.example.com/msp
+      TLS_CERT_PATH: /crypto/banka/peers/peer0.banka.example.com/tls/ca.crt
+      CHANNEL: fraud-intel
+      CHAINCODE: fraudintel
+      LEDGER_TIMEOUT_MS: "700"  # below the API's 1000, so the sidecar answers "timeout" before the API gives up
+    volumes:
+      - ./fablo-target/fabric-config/crypto-config/peerOrganizations/banka.example.com:/crypto/banka:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Must own Fablo's key files (mode 600). On WSL they belong to your user, uid 1000; check with
+    #   stat -c %u fablo-target/fabric-config/crypto-config/peerOrganizations/banka.example.com/users/User1@banka.example.com/msp/keystore/*
+    # Not root: with all capabilities dropped, root cannot read another user's 600 file anyway.
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
 
 volumes:
   sentinel-db:

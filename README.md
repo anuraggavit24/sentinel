@@ -14,7 +14,7 @@ cd chaincode/fraudintel
 npm test
 ```
 
-23 chaincode tests, including attack tests:
+25 chaincode tests (including the queryPayee contract with the risk API) and attack tests:
 - two-sandbox poisoning
 - one bank plus a sandbox capture
 - a dispute escalated through the Regulator
@@ -156,6 +156,15 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 24 | Withdrawal vs an append-only audit log | A participant id in the hash-chained log could never be deleted | Audit events carry counts, never participant ids | `test_withdrawal_deletes_everything_and_the_audit_log_keeps_no_id` |
 | 25 | Export could re-identify volunteers | Join order and clock times match "who sat at the laptop when" | Shuffled pseudonyms; sessions carry hours since the first session, not timestamps | `test_export_is_operator_only_pseudonymous_and_has_no_clock_times` |
 | 26 | The server cannot see what was typed | A script could submit 6 keystrokes for a 24-character prompt | Key-press count must fit the prompt length (at least the length, at most 4× + 10); prompts in order | `test_pasted_too_short_or_implausible_samples_are_rejected`, `test_prompts_must_be_typed_in_order` |
+| 27 | Ledger outage vs payments | Blocking every payment while the ledger is down, or letting an attacker who can knock it over pass silently | Fail-open with a 1 s ceiling; circuit breaker after 3 failures; one `LEDGER_DEGRADED` audit event per outage | `test_ledger_failure_is_fail_open_and_recorded`, `test_breaker_stops_waiting_on_a_dead_ledger_and_audits_once` |
+| 28 | A buggy or compromised sidecar answers | A forged "clear", or a report about a different payee, would be believed | Strict validation: known statuses only, weights 0–1, every report must be for a hash we asked about, summary recomputed from the reports; anything else is "unavailable" | `test_validator_rejects_answers_that_do_not_add_up` |
+| 29 | Network call inside the per-user lock | A slow ledger would hold the lock and stall every payment by that user | The ledger is asked before the lock is taken | `test_a_really_slow_ledger_costs_at_most_the_timeout` (real sockets, 3 s hang costs < 1.5 s) |
+| 30 | Payment form as a ledger lookup tool | A mule operator could learn which accounts are flagged | One customer sentence for every kind of report (pending, disputed, confirmed); details only in the analyst view. **Still reveals "reported"**: a held payment is visible by design. Residual risk, accepted | `test_customer_sees_one_wording_for_every_kind_of_report` |
+| 31 | Sidecar as an open ledger service | Anyone on the network could query the ledger as BankA | Not published on the host; `LEDGER_TOKEN` required with no default; only `/query-payee` and `/health`; hashes validated before Fabric sees them | `ledger-gateway/test/server.test.ts` |
+| 32 | Honeypot poisoning across the consortium | One bank's sandbox capture alone flagging an innocent payee everywhere | Sandbox-only reports weigh 0 in the chaincode, and 0 weight adds 0 points in the API | `test_reports_that_weigh_nothing_add_nothing`, chaincode contract test |
+| 33 | Confirmed mule paid automatically | If points were ever tuned down, a confirmed mule could fall below the step-up line | A confirmed report forces step-up regardless of score | `test_confirmed_mule_is_held_even_from_a_trusted_payee` |
+| 34 | Gateway key file permissions | First version ran the gateway as root with all capabilities dropped; without `CAP_DAC_OVERRIDE` root cannot read another user's mode-600 key, so every lookup failed (found in the first live run). It also hid the reason as "ledger call failed" | Runs as the key owner (uid 1000), read-only mount and filesystem, no capabilities; every setup failure now names the file and cause, and is logged; the smoke script checks the owner | `fabric.test.ts`: unreadable key and permission denied (run as non-root), `server.test.ts`: unexpected error keeps its message and is logged |
+| 35 | One peer's word | An evaluate reads one peer; a compromised BankA peer could hide a report | **Not fixed.** Module 3 can cross-check a second organisation's peer for high-value payments | — |
 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
@@ -357,3 +366,78 @@ docker exec sentinel-db psql -U sentinel -d sentinel -c "TRUNCATE payments, beha
 ```
 
 This does not touch the volunteer study; study data is removed only by withdrawal or the purge call.
+
+## Phase 2 · Module 2c: payments ask the consortium ledger
+
+This is where the payment flow meets the blockchain. Every payment now looks its payee up on the
+Fabric `fraud-intel` channel, and other banks' reports change the decision.
+
+```
+browser ──▶ risk API ──HTTP+token──▶ ledger-gateway ──gRPC/TLS, signed as BankA User1──▶ peer0.banka ──▶ queryPayee
+```
+
+- **`ledger-gateway/`** (Node, Fabric Gateway SDK): a read-only bridge. It can call exactly two chaincode
+  functions, `queryPayee` and `ping`, both evaluations (nothing is ordered or written). It is not
+  published on the host and needs `LEDGER_TOKEN`. Writes to the ledger come in Module 3, through the
+  outbox, with two-bank endorsement.
+- **`api/app/ledger.py`**: calls the sidecar with a 1 s ceiling, validates the answer, and keeps a
+  circuit breaker. During a consortium key rotation it sends both hashes (current and previous key),
+  which the chaincode already accepts.
+- **Scoring** (`rules-v3`), from the weights the chaincode computes:
+
+| Ledger says | Weight | Points | Result |
+|---|---|---|---|
+| Nothing about this payee | 0 | 0 | — |
+| Sandbox capture only, or retracted / overturned | 0 | 0 | Recorded for the analyst, no points |
+| Pending, one real bank | 0.25 | +10 | |
+| Disputed after being confirmed | 0.5 | +20 | |
+| **Confirmed** (two banks, not sandbox-only) | 1 | +50 | **Always held** (step-up), whatever the score |
+| Ledger slow or down | — | 0 | Scored without it; analyst sees "unavailable"; audited once per outage |
+
+The customer sees one sentence for any report ("Banks have received fraud reports about this payee");
+the analyst view lists each report with its status, reporting bank, source, weight and report id.
+
+### Run it
+
+```bash
+cd ~/sentinel
+fablo up                         # or: fablo start
+docker compose up -d --build     # builds ledger-gateway the first time
+./scripts/ledger_smoke.sh        # API -> sidecar -> peer, live: clear, honeypot (0), pending (0.25), confirmed (1)
+```
+
+The smoke script prints a confirmed UPI ID. Pay it in the app: held, with the ledger report in the
+analyst view. In a browser test:
+
+```bash
+cd web && LEDGER_UPI=<printed UPI ID> node e2e/ledger.e2e.mjs
+```
+
+Operator view of the bridge:
+
+```bash
+curl -s localhost:8000/ledger/status -H "x-demo-operator-token: demo-operator-token-change-me"
+```
+
+If `reachable` is false, `docker logs sentinel-ledger-gateway` and the `gateway.error` field say why
+(missing crypto material names the path; "peer unreachable" means the port or Fablo).
+
+### How it is tested
+
+| Layer | What runs | What it proves |
+|---|---|---|
+| Chaincode ↔ API contract | `chaincode/fraudintel/test/contract.test.ts` writes/compares `contracts/queryPayee.json`; `api/tests/test_ledger.py` feeds every case through the API's validator | The API accepts the chaincode's real output, and a shape change fails a test on the chaincode side first |
+| Sidecar ↔ Fabric | `ledger-gateway/test/fabric.test.ts`: the real `FabricLedger` against a fake peer speaking the Gateway gRPC protocol over TLS | Keys load from an MSP folder, TLS with the host-name override, right channel / chaincode / function / args, the proposal **signature verifies** against the identity's certificate, deadlines and outages reported as such, wrong TLS name refused |
+| Sidecar HTTP | `ledger-gateway/test/server.test.ts` | Token, routes, input validation before Fabric, error mapping |
+| API | `api/tests/test_ledger.py` (36) | Points per weight, the confirmed hold, one customer wording, key rotation, fail-open (timeout / 5xx / garbage), real-socket timeout, breaker and audit |
+| Cross-process (run in development) | browser → API → sidecar process → fake TLS peer | The whole chain with real processes. With the peer killed, all 15 payment browser checks still pass and the breaker opens |
+| Live Fabric | `scripts/ledger_smoke.sh` | The final check: needs your Fablo network |
+
+First live run found row 34 (key permissions); fixed. **Run `ledger_smoke.sh` before demoing.** Two assumptions to check there: BankA's peer is published on port
+7041, and Fablo created `User1@banka.example.com` (the script tells you if not, and what to set).
+
+### Limits
+- A query reads one peer (row 35).
+- "Reported" is visible to whoever makes a payment (row 30).
+- The ledger only knows what banks file. Module 3 adds filing from the fraud-ops dashboard.
+
