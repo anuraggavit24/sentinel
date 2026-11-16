@@ -3,6 +3,7 @@
 # Needs: fablo up (chaincode deployed) and docker compose up -d --build.
 # Usage: cd ~/sentinel && ./scripts/ledger_smoke.sh
 set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1   # fablo needs the project folder; works from anywhere
 
 CHANNEL="fraud-intel"; CC="fraudintel"
 A="peer0.banka.example.com"; B="peer0.bankb.example.com"; C="peer0.bankc.example.com"

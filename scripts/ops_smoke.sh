@@ -3,6 +3,7 @@
 #   new report  ->  already ours (no duplicate)  ->  confirming another bank's report makes it CONFIRMED
 # Needs: fablo up and docker compose up -d --build. Usage: cd ~/sentinel && ./scripts/ops_smoke.sh
 set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1   # fablo needs the project folder; works from anywhere
 
 CHANNEL="fraud-intel"; CC="fraudintel"
 B="peer0.bankb.example.com"; C="peer0.bankc.example.com"

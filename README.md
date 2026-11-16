@@ -513,10 +513,20 @@ LEDGER_UPI=<confirmed UPI from ledger_smoke.sh> npm run e2e:ledger
 | Gateway HTTP | `writes.test.ts` | Separate write token; read token gets 403; validation before Fabric; 422 for chaincode refusals |
 | API | `test_ops.py` (27) | Roles, elevation, separation of duties, single decision, release/reject effects, the outbox: report / confirm / already ours / race / outage / refusal / lease |
 | Browser | `ops.e2e.mjs` (two people, two passkeys) | Queue, passkey gate, reject + report with the filing reaching the ledger, release, customer's view, own payment hidden |
-| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement. **Not yet run by me**: the main risk is endorsement discovery (the Gateway must find a second bank's peer by itself) |
+| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement: 8/8 live (see below) |
 
 ### Not in 3a (next: 3b)
 - The customer's own step-up (confirm a held payment with a passkey and a "were you asked to do this?" check).
 - The sandbox (a fake balance for a suspected account takeover).
 - Disputing or retracting reports from the dashboard.
 
+
+### Live result: Module 3a writes (Fabric 2.5.16 via Fablo, 16 Nov 2026)
+
+`./scripts/ops_smoke.sh`: 8/8 passed. The Gateway gathered approvals from two banks on its own (no peers named by us).
+
+| Step | Result |
+|---|---|
+| BankA files a new report through the outbox | committed, PENDING, weight 0.25 (~5.7 s queue-to-commit incl. the 3 s drainer interval) |
+| Same payee filed again | `already_ours`, same report id, nothing written |
+| BankB reports first, BankA's filing follows | BankA confirms it -> CONFIRMED, weight 1, two non-sandbox banks |
