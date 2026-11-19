@@ -29,13 +29,16 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from . import audit, db, enrolment, ledger_outbox, ops, payments, research, settings, stepup
+from . import audit, chainview, db, demo, enrolment, ledger_outbox, ops, payments, research, settings, stepup
 from .auth_deps import current_session, now, request_ip, token_hash
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
+    if settings.DEMO_LOGIN:
+        import logging
+        logging.getLogger("sentinel.demo").warning("DEMO_LOGIN=1: /demo logins need no passkey. Demo use only.")
     drainer = audit.Drainer()
     drainer.start()
     filer = ledger_outbox.Drainer()
@@ -45,12 +48,14 @@ async def lifespan(_: FastAPI):
     drainer.stop()
 
 
-app = FastAPI(title="Sentinel API", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="Sentinel API", version="0.10.0", lifespan=lifespan)
 app.include_router(payments.router)
 app.include_router(enrolment.router)
 app.include_router(research.router)
 app.include_router(ops.router)
 app.include_router(stepup.router)
+app.include_router(chainview.router)
+app.include_router(demo.router)
 
 USERNAME_PATTERN = r"^[a-z0-9_.-]{3,32}$"
 

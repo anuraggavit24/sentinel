@@ -6,9 +6,13 @@
  */
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
-import { LedgerClient, LedgerError } from './ledger';
+import { CAs, parseBlock, parseChainInfo } from './chain';
+import { OrgIdentity } from './identities';
+import { LedgerClient, LedgerError, SubmitOptions, WriteFunction } from './ledger';
 
 const HEX64 = /^[0-9a-f]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BANKS = ['BankAMSP', 'BankBMSP', 'BankCMSP'];
 const MAX_BODY = 4096;
 const ID_TYPES = ['ACCOUNT', 'UPI', 'PHONE'];
 const SOURCES = ['SANDBOX_CAPTURE', 'ANALYST', 'CUSTOMER_COMPLAINT'];
@@ -85,6 +89,26 @@ export function validateConfirm(body: unknown): string[] {
   ];
 }
 
+/**
+ * recordPayment: the details go to the endorsing peers as transient data (never into the block); the
+ * chaincode validates every field. Here: shape, size, and that the sender is the identity we act as.
+ */
+export function validatePayment(body: unknown, actingAs: string): { paymentId: string; details: Record<string, unknown>; endorsers: string[] } {
+  const d = (body as { payment?: unknown })?.payment;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) throw new Error('payment must be an object');
+  const details = d as Record<string, unknown>;
+  if (typeof details.paymentId !== 'string' || !UUID.test(details.paymentId)) throw new Error('payment.paymentId must be a lowercase UUID');
+  if (details.fromBank !== actingAs) throw new Error(`payment.fromBank must be the sending bank (${actingAs})`);
+  if (typeof details.toBank !== 'string' || !BANKS.includes(details.toBank)) throw new Error(`payment.toBank must be one of ${BANKS.join(', ')}`);
+  // The two banks in the payment endorse: they are the collection's members, so their peers keep the details.
+  // One bank (both customers there): that bank plus one other, for the 2-of-3 chaincode policy; the other
+  // peer stores only the hash.
+  const endorsers = details.fromBank === details.toBank
+    ? [actingAs, BANKS.find((b) => b !== actingAs)!]
+    : [actingAs, details.toBank];
+  return { paymentId: details.paymentId, details, endorsers };
+}
+
 function errorMessage(err: unknown): string {
   return String((err as Error)?.message ?? err).split('\n')[0].slice(0, 200);
 }
@@ -102,14 +126,31 @@ export interface Tokens {
   write: string; // empty: writes disabled
 }
 
-export function makeServer(ledger: LedgerClient, tokens: Tokens | string): http.Server {
+export interface Network {
+  /** Every organisation this sidecar can act as, by MSP id (the demo bank network). */
+  orgs?: Map<string, LedgerClient>;
+  identities?: () => Promise<OrgIdentity[]>;
+  cas?: () => Promise<CAs>;
+}
+
+const WRITES = ['/report-mule', '/confirm-report', '/record-payment'];
+
+export function makeServer(ledger: LedgerClient, tokens: Tokens | string, net: Network = {}): http.Server {
   const t: Tokens = typeof tokens === 'string' ? { read: tokens, write: '' } : tokens;
+  const orgs = net.orgs ?? new Map<string, LedgerClient>();
+  /** The identity to act as: the default, or a named organisation of the demo network. */
+  const actAs = (org: unknown): LedgerClient => {
+    if (org === undefined || org === null || org === '') return ledger;
+    const l = typeof org === 'string' ? orgs.get(org) : undefined;
+    if (!l) throw new Error(`org must be one of ${[...orgs.keys()].join(', ') || '(none: ORGS is not set)'}`);
+    return l;
+  };
   return http.createServer(async (req, res) => {
     const started = Date.now();
     const given = req.headers['x-ledger-token'];
     const canWrite = same(given, t.write);
     const canRead = canWrite || same(given, t.read);
-    const isWrite = req.method === 'POST' && (req.url === '/report-mule' || req.url === '/confirm-report');
+    const isWrite = req.method === 'POST' && WRITES.includes(req.url ?? '');
     try {
       if (isWrite && !t.write) return send(res, 404, { error: 'not found' });
       if (!canRead) return send(res, 401, { error: 'ledger token required' });
@@ -124,6 +165,55 @@ export function makeServer(ledger: LedgerClient, tokens: Tokens | string): http.
         }
       }
 
+      // Public keys of the network (read token). Certificates only: private keys never leave.
+      if (req.method === 'GET' && req.url === '/identities') {
+        if (!net.identities) return send(res, 404, { error: 'not found' });
+        return send(res, 200, { orgs: await net.identities() });
+      }
+
+      // A payment as one organisation sees it (read token): members get the details, others the hash.
+      if (req.method === 'GET' && req.url?.startsWith('/payment/')) {
+        const url = new URL(req.url, 'http://x');
+        const m = url.pathname.match(/^\/payment\/([0-9a-f-]{36})$/);
+        let as: LedgerClient;
+        try {
+          if (!m || !UUID.test(m[1])) throw new Error('payment id must be a lowercase UUID');
+          as = actAs(url.searchParams.get('org'));
+          if (!as.getPayment) throw new Error('this ledger cannot read payments');
+        } catch (err) {
+          return send(res, 400, { error: (err as Error).message });
+        }
+        try {
+          return send(res, 200, { result: JSON.parse(await as.getPayment!(m![1])), latencyMs: Date.now() - started });
+        } catch (err) {
+          return ledgerFailure(res, 'getPayment', err);
+        }
+      }
+
+      // Chain views (read token): the latest blocks, and the block that holds a given transaction.
+      if (req.method === 'GET' && req.url?.startsWith('/chain/')) {
+        const url = new URL(req.url, 'http://x');
+        try {
+          const cas = net.cas ? await net.cas() : undefined;
+          if (url.pathname === '/chain/blocks') {
+            const count = Math.min(Math.max(Number(url.searchParams.get('count') ?? 8) || 8, 1), 20);
+            const info = parseChainInfo(await ledger.chainInfo());
+            const blocks = [];
+            for (let n = info.height - 1; n >= 0 && blocks.length < count; n--) {
+              blocks.push(parseBlock(await ledger.blockByNumber(n), cas));
+            }
+            return send(res, 200, { info, blocks, latencyMs: Date.now() - started });
+          }
+          const tx = url.pathname.match(/^\/chain\/tx\/([0-9a-f]{64})$/);
+          if (tx) {
+            return send(res, 200, { block: parseBlock(await ledger.blockByTxId(tx[1]), cas), latencyMs: Date.now() - started });
+          }
+        } catch (err) {
+          return ledgerFailure(res, 'chain', err);
+        }
+        return send(res, 404, { error: 'not found' });
+      }
+
       if (req.method === 'POST' && (req.url === '/query-payee' || isWrite)) {
         let body: unknown;
         try {
@@ -132,26 +222,46 @@ export function makeServer(ledger: LedgerClient, tokens: Tokens | string): http.
           const big = (err as Error).message === 'too large';
           return send(res, big ? 413 : 400, { error: big ? 'body too large' : 'body must be JSON' });
         }
-        let fn: 'queryPayee' | 'reportMule' | 'confirmReport';
+        let fn: 'queryPayee' | WriteFunction;
         let args: string[];
+        let as: LedgerClient;
+        let opts: SubmitOptions = {};
         try {
+          as = actAs((body as { org?: unknown })?.org);
+          const msp = (as as { mspId?: string }).mspId ?? 'BankAMSP';
           if (req.url === '/query-payee') {
             fn = 'queryPayee';
             args = validateHashes(body);
           } else if (req.url === '/report-mule') {
             fn = 'reportMule';
             args = validateReport(body);
-          } else {
+          } else if (req.url === '/confirm-report') {
             fn = 'confirmReport';
             args = validateConfirm(body);
+          } else {
+            fn = 'recordPayment';
+            const p = validatePayment(body, msp);
+            if (!as.submitTx) throw new Error('this ledger cannot record payments');
+            args = [p.paymentId];
+            opts = { transient: { payment: Buffer.from(JSON.stringify(p.details)) }, endorsingOrganizations: p.endorsers };
           }
         } catch (err) {
           return send(res, 400, { error: (err as Error).message });
         }
         try {
-          const raw = fn === 'queryPayee' ? await ledger.queryPayee(args) : await ledger.submit(fn, args);
-          if (fn !== 'queryPayee') console.log(`${new Date().toISOString()} ${fn} committed in ${Date.now() - started} ms`);
-          return send(res, 200, { result: JSON.parse(raw), latencyMs: Date.now() - started });
+          if (fn === 'queryPayee') {
+            return send(res, 200, { result: JSON.parse(await as.queryPayee(args)), latencyMs: Date.now() - started });
+          }
+          let result: string;
+          let txId: string | null = null;
+          let blockNumber: number | null = null;
+          if (as.submitTx) {
+            ({ result, txId, blockNumber } = await as.submitTx(fn, args, opts));
+          } else {
+            result = await as.submit(fn, args);
+          }
+          console.log(`${new Date().toISOString()} ${fn} as ${(as as { mspId?: string }).mspId ?? 'default'} committed in ${Date.now() - started} ms`);
+          return send(res, 200, { result: JSON.parse(result), txId, blockNumber, latencyMs: Date.now() - started });
         } catch (err) {
           return ledgerFailure(res, fn, err);
         }

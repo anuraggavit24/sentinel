@@ -16,6 +16,10 @@ import * as path from 'node:path';
 import { after, before, test } from 'node:test';
 import { Config } from '../src/config';
 import { FabricLedger, LedgerError } from '../src/ledger';
+import { parseBlock, parseChainInfo } from '../src/chain';
+import { chain } from './chainfixture';
+
+const CHAIN = chain();
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-peer-'));
 const ssl = (...args: string[]) => execFileSync('openssl', args, { cwd: dir, stdio: 'pipe' });
@@ -41,7 +45,7 @@ function makeCerts(): void {
 }
 
 let commitCode = 0; // peer.TxValidationCode: 0 VALID, 11 MVCC_READ_CONFLICT
-const writes: { args: string[]; signatureValid: boolean; envelopeSigned: boolean }[] = [];
+const writes: { args: string[]; signatureValid: boolean; envelopeSigned: boolean; transient?: Record<string, string>; endorsingOrgs?: string[]; txId?: string }[] = [];
 
 function decode(signed: peer.SignedProposal): { channel: string; chaincode: string; args: string[]; signatureValid: boolean } {
   const proposalBytes = signed.getProposalBytes_asU8();
@@ -85,7 +89,12 @@ function preparedEnvelope(result: string): common.Envelope {
 function endorse(call: grpc.ServerUnaryCall<gateway.EndorseRequest, gateway.EndorseResponse>,
   cb: grpc.sendUnaryData<gateway.EndorseResponse>): void {
   const d = decode(call.request.getProposedTransaction()!);
-  writes.push({ args: d.args, signatureValid: d.signatureValid, envelopeSigned: false });
+  const proposal = peer.Proposal.deserializeBinary(call.request.getProposedTransaction()!.getProposalBytes_asU8());
+  const transient: Record<string, string> = {};
+  peer.ChaincodeProposalPayload.deserializeBinary(proposal.getPayload_asU8()).getTransientmapMap()
+    .forEach((v: Uint8Array | string, k: string) => { transient[k] = Buffer.from(v as Uint8Array).toString('utf8'); });
+  writes.push({ args: d.args, signatureValid: d.signatureValid, envelopeSigned: false, transient,
+    endorsingOrgs: call.request.getEndorsingOrganizationsList(), txId: call.request.getTransactionId() });
   if (d.args[0] === 'reportMule' && d.args[1] === 'f'.repeat(64)) {
     cb({ code: grpc.status.ABORTED, details: 'failed to endorse: Active report r1 already exists for this identifier; confirm or dispute it instead' });
     return;
@@ -126,6 +135,24 @@ function evaluate(call: grpc.ServerUnaryCall<gateway.EvaluateRequest, gateway.Ev
   const args = spec.getInput()!.getArgsList_asU8().map((a) => Buffer.from(a).toString('utf8'));
   seen.push({ channel, chaincode: spec.getChaincodeId()!.getName(), args, signatureValid });
 
+  if (spec.getChaincodeId()!.getName() === 'qscc') {
+    // System chaincode: args are [function, channel, ...]; answers are raw protobuf bytes.
+    const [fn, , arg] = args;
+    const bytes = fn === 'GetChainInfo' ? CHAIN.info
+      : fn === 'GetBlockByNumber' ? CHAIN.blocks[Number(arg)]
+      : fn === 'GetBlockByTxID' && arg === CHAIN.reportTx ? CHAIN.blocks[1] : undefined;
+    if (!bytes) {
+      cb({ code: grpc.status.UNKNOWN, details: `qscc ${fn} ${arg}: not found` });
+      return;
+    }
+    const result = new peer.Response();
+    result.setStatus(200);
+    result.setPayload(bytes);
+    const res = new gateway.EvaluateResponse();
+    res.setResult(result);
+    cb(null, res);
+    return;
+  }
   const reply = () => {
     if (mode === 'error') {
       cb({ code: grpc.status.UNKNOWN, details: 'chaincode response 500, idHashesJson must hold 1 hash\n  at stack' });
@@ -296,4 +323,51 @@ test('a chaincode refusal at endorsement keeps its message', async () => {
   await assert.rejects(ledger.submit('reportMule', ['f'.repeat(64), 'UPI', 'b'.repeat(64), 'ANALYST', 'HIGH']),
     (e: LedgerError) => e.kind === 'chaincode' && /already exists/.test(e.message));
   ledger.close();
+});
+
+test('chain reads go to qscc on our channel and come back as real blocks', async () => {
+  mode = 'ok';
+  const ledger = new FabricLedger(config());
+  const info = parseChainInfo(await ledger.chainInfo());
+  assert.equal(info.height, 4);
+  assert.deepEqual(seen.at(-1)!.args, ['GetChainInfo', 'fraud-intel']);
+  assert.equal(seen.at(-1)!.chaincode, 'qscc');
+  const b1 = parseBlock(await ledger.blockByNumber(1));
+  assert.deepEqual(seen.at(-1)!.args, ['GetBlockByNumber', 'fraud-intel', '1']);
+  assert.equal(b1.txs[0].fn, 'reportMule');
+  const byTx = parseBlock(await ledger.blockByTxId(CHAIN.reportTx));
+  assert.equal(byTx.number, 1);
+  await assert.rejects(ledger.blockByTxId('0'.repeat(64)), (e: LedgerError) => e.kind === 'chaincode');
+  ledger.close();
+});
+
+test('a write with private data sends it as transient data to the named endorsers, and returns the tx id', async () => {
+  commitCode = 0;
+  const ledger = new FabricLedger(config());
+  const details = { paymentId: 'p1', amountPaise: 5 };
+  const out = await ledger.submitTx('recordPayment', ['p1'], {
+    transient: { payment: Buffer.from(JSON.stringify(details)) },
+    endorsingOrganizations: ['BankAMSP', 'BankCMSP'],
+  });
+  ledger.close();
+  const w = writes.at(-1)!;
+  assert.deepEqual(w.args, ['recordPayment', 'p1'], 'the details are not a transaction argument');
+  assert.deepEqual(JSON.parse(w.transient!.payment), details);
+  assert.deepEqual(w.endorsingOrgs, ['BankAMSP', 'BankCMSP']);
+  assert.equal(out.txId, w.txId);
+  assert.match(out.txId, /^[0-9a-f]{64}$/);
+  assert.equal(out.blockNumber, 7);
+  assert.equal(w.envelopeSigned, true);
+});
+
+test('acting as another organisation uses that organisation\'s peer and identity', async () => {
+  const ledger = new FabricLedger(config(), { name: 'BankA', mspId: 'BankAMSP', peerEndpoint: `127.0.0.1:${port}`,
+    peerHostAlias: 'peer0.banka.example.com', tlsCertPath: path.join(dir, 'ca.crt'), mspDir: path.join(dir, 'msp'), orgDir: dir });
+  assert.equal(ledger.mspId, 'BankAMSP');
+  assert.equal(JSON.parse(await ledger.ping()).msp, 'BankAMSP');
+  ledger.close();
+  const wrongPeer = new FabricLedger(config(), { name: 'BankB', mspId: 'BankBMSP', peerEndpoint: `127.0.0.1:${port}`,
+    peerHostAlias: 'peer0.bankb.example.com', tlsCertPath: path.join(dir, 'ca.crt'), mspDir: path.join(dir, 'msp'), orgDir: dir });
+  await assert.rejects(wrongPeer.ping(), 'BankB\'s client must not accept a peer whose certificate says BankA');
+  wrongPeer.close();
 });

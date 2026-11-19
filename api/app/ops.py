@@ -260,3 +260,26 @@ def revoke_sandboxed(session_id: uuid.UUID, session: dict = Depends(elevated)) -
         audit.enqueue(conn, "SANDBOX_SESSION_REVOKED", {"sessionId": str(session_id), "analystId": str(session["user_id"])})
     return {"revoked": True}
 
+
+# ---------------------------------------------------------------- copilot (Module 4)
+class CopilotIn(BaseModel):
+    paymentId: uuid.UUID
+    question: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/copilot")
+def copilot(body: CopilotIn, session: dict = Depends(analyst)) -> dict:
+    """Read-only: it explains a case from its sources; it cannot release, reject or report."""
+    from .copilot import service
+
+    return service.ask(session, body.paymentId, body.question.strip())
+
+
+@router.get("/copilot/status")
+def copilot_status(session: dict = Depends(analyst)) -> dict:
+    from .copilot import retrieval, service
+
+    return {"mode": "llm" if service.use_model() else "extractive",
+            "model": settings.COPILOT_MODEL if service.use_model() else None,
+            "policySections": len(retrieval.policy_chunks())}
+

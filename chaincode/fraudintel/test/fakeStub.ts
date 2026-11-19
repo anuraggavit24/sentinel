@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 type Ts = { seconds: number; nanos: number };
 type Mod = { txId: string; timestamp: Ts; isDelete: boolean; value: Buffer };
 
@@ -18,6 +20,11 @@ export class FakeStub {
   private state = new Map<string, Buffer>(); // committed world state
   private pending = new Map<string, Buffer | null>(); // this transaction's writes (null = delete)
   private history = new Map<string, Mod[]>();
+  private priv = new Map<string, Buffer>(); // "collection\u0000key" -> committed private value
+  private privPending = new Map<string, Buffer>();
+  public transient = new Map<string, Uint8Array>();
+  /** Collections this peer's organisation belongs to; null = all (peer of every org). */
+  public memberOf: Set<string> | null = null;
   private counter = 0;
   private txId = 'tx0000';
   private ts: Ts = { seconds: 1763164800, nanos: 0 };
@@ -35,11 +42,14 @@ export class FakeStub {
       }
     }
     this.pending.clear();
+    for (const [k, v] of this.privPending) this.priv.set(k, v);
+    this.privPending.clear();
   }
 
   /** Discards the current transaction's writes. A failed Fabric transaction changes nothing. */
   rollback(): void {
     this.pending.clear();
+    this.privPending.clear();
   }
 
   nextTx(txId?: string): void {
@@ -69,6 +79,33 @@ export class FakeStub {
 
   async deleteState(key: string): Promise<void> {
     this.pending.set(key, null);
+  }
+
+  getTransient(): Map<string, Uint8Array> {
+    return this.transient;
+  }
+
+  async putPrivateData(collection: string, key: string, value: Uint8Array): Promise<void> {
+    this.privPending.set(`${collection}\u0000${key}`, Buffer.from(value));
+  }
+
+  /** Like a peer: a non-member peer does not hold the data at all. */
+  async getPrivateData(collection: string, key: string): Promise<Buffer> {
+    if (this.memberOf && !this.memberOf.has(collection)) {
+      throw new Error(`peer is not a member of collection ${collection}`);
+    }
+    return this.priv.get(`${collection}\u0000${key}`) ?? Buffer.alloc(0);
+  }
+
+  /** Every peer on the channel keeps the hash of private data, member or not. */
+  async getPrivateDataHash(collection: string, key: string): Promise<Buffer> {
+    const v = this.priv.get(`${collection}\u0000${key}`);
+    return v ? createHash('sha256').update(v).digest() : Buffer.alloc(0);
+  }
+
+  /** Test only: change a bank's stored private copy, as a tamperer with database access would. */
+  tamperPrivate(collection: string, key: string, value: Buffer): void {
+    this.priv.set(`${collection}\u0000${key}`, value);
   }
 
   setEvent(name: string, payload: Uint8Array): void {

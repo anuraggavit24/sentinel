@@ -42,3 +42,10 @@ LEDGER_WRITE_TOKEN = os.environ.get("LEDGER_WRITE_TOKEN", "")
 LEDGER_MSP = os.environ.get("LEDGER_MSP", "BankAMSP")  # this bank, as the ledger knows it
 LEDGER_DRAIN_INTERVAL_SECONDS = float(os.environ.get("LEDGER_DRAIN_INTERVAL_SECONDS", "3"))
 OPS_ELEVATION_MINUTES = int(os.environ.get("OPS_ELEVATION_MINUTES", "10"))
+# Module 4: analyst copilot. Without a key it answers in extractive mode (quoted passages, no model).
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+COPILOT_MODEL = os.environ.get("COPILOT_MODEL", "claude-sonnet-5-5")
+COPILOT_MAX_TOKENS = int(os.environ.get("COPILOT_MAX_TOKENS", "700"))
+COPILOT_LLM = os.environ.get("COPILOT_LLM", "auto")  # auto | off
+# Demo bank network (#/demo): three banks, one-click logins WITHOUT passkeys. Never on in production.
+DEMO_LOGIN = os.environ.get("DEMO_LOGIN", "0") == "1"

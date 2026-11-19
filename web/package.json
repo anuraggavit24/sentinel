@@ -1,16 +1,19 @@
 {
   "name": "sentinel-web",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "e2e": "node e2e/passkey.e2e.mjs && node e2e/payments.e2e.mjs && node e2e/behaviour.e2e.mjs && node e2e/study.e2e.mjs && node e2e/ops.e2e.mjs",
-    "e2e:ledger": "node e2e/ledger.e2e.mjs"
+    "e2e": "node e2e/passkey.e2e.mjs && node e2e/payments.e2e.mjs && node e2e/behaviour.e2e.mjs && node e2e/study.e2e.mjs && node e2e/ops.e2e.mjs && node e2e/stepup.e2e.mjs && node e2e/copilot.e2e.mjs && node e2e/ledger-ui.e2e.mjs",
+    "e2e:ledger": "node e2e/ledger.e2e.mjs",
+    "e2e:demo": "node e2e/demo.e2e.mjs"
   },
   "dependencies": {
+    "@fontsource/archivo": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
     "@simplewebauthn/browser": "^13.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

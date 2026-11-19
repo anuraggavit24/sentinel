@@ -156,6 +156,20 @@ ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('com
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS step_up JSONB;           -- the customer's answers and the outcome
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS step_up_flagged BOOLEAN NOT NULL DEFAULT false;  -- scam pattern: review first
 
+-- Module 4: every copilot question and answer, for review (what was asked, what it was shown, what it said).
+CREATE TABLE IF NOT EXISTS copilot_log (
+    id          BIGSERIAL PRIMARY KEY,
+    analyst_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+    payment_id  UUID REFERENCES payments(id) ON DELETE SET NULL,
+    question    TEXT NOT NULL,
+    mode        TEXT NOT NULL CHECK (mode IN ('llm', 'extractive')),
+    answer      TEXT NOT NULL,
+    source_ids  TEXT[] NOT NULL,
+    warnings    JSONB NOT NULL DEFAULT '[]',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS copilot_log_analyst_idx ON copilot_log(analyst_id, created_at);
+
 -- Slice 2b part 2: volunteer typing study. Deliberately NOT linked to users: volunteers have no bank
 -- account, and no name, IP address or user agent is stored. Invites are single use; the participant code
 -- is issued at join time, so whoever handed out the invite cannot link it to the data.
@@ -182,6 +196,50 @@ CREATE TABLE IF NOT EXISTS research_samples (
 CREATE INDEX IF NOT EXISTS research_samples_participant_idx ON research_samples(participant_id, id);
 
 -- Demo-only device and telecom signals for a session (the web demo cannot read SIM or call state).
+-- Demo bank network (DEMO_LOGIN=1 only; separate from real users). Money moves here, off-chain; the
+-- ledger gets fraud reports and payment receipts. record = the exact details sent to the ledger (this
+-- bank's copy); record_tampered = a demo edit of that copy, to show the chain catching it.
+CREATE TABLE IF NOT EXISTS demo_meta (
+    id    INT PRIMARY KEY CHECK (id = 1),
+    round INT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_accounts (
+    id            SERIAL PRIMARY KEY,
+    bank          TEXT NOT NULL CHECK (bank IN ('BankAMSP', 'BankBMSP', 'BankCMSP')),
+    name          TEXT NOT NULL,
+    upi           TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN ('customer', 'scammer')),
+    balance_paise BIGINT NOT NULL CHECK (balance_paise >= 0)
+);
+CREATE TABLE IF NOT EXISTS demo_sessions (
+    token_hash BYTEA PRIMARY KEY,
+    account_id INT NOT NULL REFERENCES demo_accounts(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_transfers (
+    id              UUID PRIMARY KEY,
+    from_account    INT NOT NULL REFERENCES demo_accounts(id) ON DELETE CASCADE,
+    to_upi          TEXT NOT NULL,
+    to_bank         TEXT NOT NULL,
+    to_account      INT REFERENCES demo_accounts(id) ON DELETE SET NULL,
+    amount_paise    BIGINT NOT NULL CHECK (amount_paise > 0),
+    verdict         TEXT NOT NULL CHECK (verdict IN ('ALLOWED', 'WARNED', 'BLOCKED')),
+    reason          TEXT NOT NULL,
+    ledger_check    JSONB,
+    record          JSONB,
+    record_tampered JSONB,
+    ledger_status   TEXT NOT NULL CHECK (ledger_status IN ('none', 'pending', 'recorded', 'failed')),
+    ledger_tx       TEXT,
+    ledger_block    BIGINT,
+    ledger_error    TEXT,
+    report          JSONB,
+    evidence        JSONB,
+    reported_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS demo_transfers_from_idx ON demo_transfers(from_account, created_at DESC);
+CREATE INDEX IF NOT EXISTS demo_transfers_to_idx ON demo_transfers(to_account, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS session_signals (
     session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     signals    JSONB NOT NULL,
@@ -209,7 +267,7 @@ def ensure_database() -> None:
 # older: statements like ALTER TABLE ... ADD COLUMN IF NOT EXISTS take an ACCESS EXCLUSIVE lock even when
 # the column exists, so running them on every start deadlocked in-flight payments (found by a flaky
 # test that starts several clients while others pay; in production, a rolling restart).
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 _MIGRATION_LOCK = 7_402_118  # advisory lock id: one process migrates at a time
 
 

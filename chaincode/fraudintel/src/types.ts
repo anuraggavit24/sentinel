@@ -65,3 +65,34 @@ export interface WeightedReport {
   weight: number;
   hardRuleEligible: boolean;
 }
+
+// ---------- payments (demo bank network) ----------
+
+export type PaymentVerdict = 'ALLOWED' | 'WARNED';
+export const PAYMENT_VERDICTS: readonly PaymentVerdict[] = ['ALLOWED', 'WARNED'];
+
+/** Held only by the two banks in the payment (a private data collection). Never on the shared channel. */
+export interface PaymentPrivate {
+  paymentId: string;
+  fromBank: string;
+  toBank: string;
+  payer: string;        // payer's UPI ID
+  payerName: string;
+  payee: string;        // payee's UPI ID
+  amountPaise: number;
+  verdict: PaymentVerdict;
+  createdAt: string;    // when the sending bank accepted it
+  salt: string;         // 32 random bytes, hex: stops anyone guessing the details from the public hash
+}
+
+/** On the shared channel, readable by every member: who was involved and a hash of the details. */
+export interface PaymentPublic {
+  docType: 'payment';
+  paymentId: string;
+  fromBank: string;
+  toBank: string;
+  collection: string;   // where the details live
+  dataHash: string;     // SHA-256 of the private record's exact bytes
+  txId: string;
+  txTime: string;
+}

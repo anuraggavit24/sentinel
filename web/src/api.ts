@@ -373,3 +373,213 @@ export interface SandboxSession {
 
 export const getSandboxSessions = () => call<{ sessions: SandboxSession[] }>("/ops/sandbox");
 export const revokeSandboxSession = (id: string) => post<{ revoked: boolean }>(`/ops/sessions/${id}/revoke`);
+
+// ---------------------------------------------------------------- Module 4: analyst copilot
+export interface CopilotSource {
+  n: number;
+  kind: "case" | "ledger" | "history" | "policy";
+  id: string;
+  title: string;
+  text: string;
+  cited: boolean;
+}
+
+export interface CopilotAnswer {
+  mode: "llm" | "extractive";
+  answer: string;
+  unverified: boolean;
+  warnings: string[];
+  sources: CopilotSource[];
+}
+
+export const askCopilot = (paymentId: string, question: string) =>
+  post<CopilotAnswer>("/ops/copilot", { paymentId, question });
+export const getCopilotStatus = () =>
+  call<{ mode: "llm" | "extractive"; model: string | null; policySections: number }>("/ops/copilot/status");
+
+// ---------------------------------------------------------------- Ledger page: the chain itself
+export interface ChainTx {
+  txId: string;
+  type: "endorser" | "config" | "other";
+  timestamp: string | null;
+  creator: string | null;
+  chaincode: string | null;
+  fn: string | null;
+  args: string[];
+  endorsers: string[];
+  signer?: SignatureView | null;
+  endorsements?: SignatureView[];
+  privateCollections?: string[];
+  validation: number | null;
+  valid: boolean | null;
+  ours?: { filing: string; source: string };
+}
+
+/** A signature in a block, checked by the gateway with the signer's public key (and the bank's CA). */
+export interface SignatureView {
+  msp: string | null;
+  subject: string | null;
+  keyFingerprint: string | null;
+  signatureValid: boolean | null;
+  issuedByOrgCA: boolean | null;
+}
+
+export interface ChainBlock {
+  number: number;
+  hash: string;
+  previousHash: string;
+  dataHash: string;
+  dataHashVerified: boolean;
+  linkVerified?: boolean | null;
+  txCount: number;
+  txs: ChainTx[];
+}
+
+export interface ChainView {
+  info: { height: number; currentBlockHash: string; previousBlockHash: string };
+  blocks: ChainBlock[];
+  latencyMs: number;
+  network: { channel: string; chaincode: string; endorsement: string; orgs: { msp: string; name: string; role: string; us: boolean }[] };
+}
+
+export interface LookupStep {
+  step: string;
+  detail: string;
+  value?: string;
+}
+
+export const getChain = (count = 8) => call<ChainView>(`/ledger/chain?count=${count}`);
+export const getChainTx = (txId: string) => call<{ block: ChainBlock; tx: ChainTx | null }>(`/ledger/tx/${txId}`);
+export const lookupPayee = (payeeType: PayeeType, payee: Record<string, string>) =>
+  post<{ steps: LookupStep[]; ledger: ConsortiumView; points: number | null }>("/ledger/lookup", { payeeType, payee });
+
+/** Ask the app to open the Ledger page on one transaction (a ledger report id is a Fabric tx id). */
+export function traceOnLedger(txId: string) {
+  window.dispatchEvent(new CustomEvent("sentinel:trace", { detail: txId }));
+}
+
+// ---------------------------------------------------------------- #/demo: the bank network
+export interface DemoCustomer {
+  id: number;
+  name: string;
+  upi: string;
+}
+
+export interface DemoAccounts {
+  banks: { bank: string; name: string; customers: DemoCustomer[] }[];
+  scammer: { name: string; upi: string; bank: string };
+  round: number;
+  ledger: boolean;
+  ledgerWrites: boolean;
+}
+
+export interface DemoCheck {
+  status: "clear" | "hit" | "unavailable";
+  maxWeight?: number;
+  confirmed?: boolean;
+  reports?: { reportId: string; status: string; reporterOrg: string; banks: number; weight: number }[];
+  askedAs?: string;
+  blockedBecause?: string[];
+  error?: string;
+}
+
+export interface DemoReport {
+  action: "reported" | "confirmed" | "already_reported";
+  bank: string;
+  reportId: string;
+  txId: string | null;
+  block: number | null;
+  statusAfter: string | null;
+  evidenceHash: string;
+}
+
+export interface DemoTransfer {
+  id: string;
+  direction: "sent" | "received";
+  counterparty: string;
+  counterpartyName: string | null;
+  counterpartyBank: string;
+  amount: number;
+  verdict: "ALLOWED" | "WARNED" | "BLOCKED";
+  reason: string;
+  ledgerCheck: DemoCheck | null;
+  ledgerStatus: "none" | "pending" | "recorded" | "failed";
+  ledgerTx: string | null;
+  ledgerBlock: number | null;
+  ledgerError: string | null;
+  report: DemoReport | null;
+  tampered: boolean | null;
+  createdAt: string;
+}
+
+export interface DemoMe {
+  account: { id: number; name: string; upi: string; bank: string; bankName: string; balance: number };
+  transfers: DemoTransfer[];
+  scammer: string;
+  result?: { id?: string; verdict?: string; reason?: string; check?: DemoCheck } & Partial<DemoReport>;
+}
+
+export interface DemoPaymentView {
+  paymentId: string;
+  txId: string;
+  block: number | null;
+  access: "member" | "hash-only";
+  public: { paymentId: string; fromBank: string; toBank: string; collection: string; dataHash: string; txId: string; txTime?: string };
+  details: { payer: string; payerName: string; payee: string; amountPaise: number; verdict: string; createdAt: string; salt: string } | null;
+  fabricHash: string | null;
+  fabricHashMatches: boolean;
+  note: string;
+  bankCopy?: { amount: number; hash: string; matchesChain: boolean; tampered: boolean };
+}
+
+export interface CertView {
+  subject: string;
+  issuer: string;
+  serialNumber: string;
+  validFrom: string;
+  validTo: string;
+  keyType: string;
+  publicKeyPem: string;
+  keyFingerprint: string;
+  issuedByOrgCA: boolean | null;
+}
+
+export interface OrgIdentity {
+  msp: string;
+  ca: CertView | null;
+  client: CertView | null;
+  peer: CertView | null;
+  privateKey: string;
+  error?: string;
+}
+
+export const demoAccounts = () => call<DemoAccounts>("/demo/accounts");
+export const demoLogin = (accountId: number) => post<DemoMe>("/demo/login", { accountId });
+export const demoLogout = () => post("/demo/logout");
+export const demoMe = () => call<DemoMe>("/demo/me");
+export const demoSend = (toUpi: string, amount: number, acknowledgeWarning = false) =>
+  post<DemoMe>("/demo/transfers", { toUpi, amount, acknowledgeWarning });
+export const demoReport = (id: string) => post<DemoMe>(`/demo/transfers/${id}/report`);
+export const demoRetry = (id: string) => post<DemoMe>(`/demo/transfers/${id}/retry-ledger`);
+export const demoTamper = (id: string) => post<DemoMe>(`/demo/transfers/${id}/tamper`);
+export const demoRestore = (id: string) => post<DemoMe>(`/demo/transfers/${id}/restore`);
+export const demoReset = () => post<DemoMe>("/demo/reset");
+export const demoLedger = (viewer: string) =>
+  call<{ viewer: string; viewerName: string; payments: DemoPaymentView[]; error: string | null }>(`/demo/ledger?viewer=${viewer}`);
+export const demoChain = (count = 6) => call<{ info: ChainView["info"]; blocks: ChainBlock[] }>(`/demo/chain?count=${count}`);
+export const demoKeys = () => call<{ orgs: OrgIdentity[] }>("/demo/keys");
+
+/** A 409 with a structured detail (the warning before paying a reported payee). */
+export async function demoSendRaw(toUpi: string, amount: number, acknowledgeWarning: boolean): Promise<
+  { ok: true; me: DemoMe } | { ok: false; status: number; detail: unknown }
+> {
+  const res = await fetch("/api/demo/transfers", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ toUpi, amount, acknowledgeWarning }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return { ok: true, me: body as DemoMe };
+  return { ok: false, status: res.status, detail: body.detail };
+}

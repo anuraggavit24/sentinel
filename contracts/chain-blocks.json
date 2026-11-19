@@ -1,0 +1,246 @@
+{
+ "info": {
+  "height": 4,
+  "currentBlockHash": "0c5abb854cef9ed8e0d7ac6a36b761dbae441abcbf4a63958dbf1557d898ea54",
+  "previousBlockHash": "e1c66c274659dadc42b8f66d246047c3451a686f7e2dc0fef2c2b8237a865c84"
+ },
+ "blocks": [
+  {
+   "number": 3,
+   "hash": "0c5abb854cef9ed8e0d7ac6a36b761dbae441abcbf4a63958dbf1557d898ea54",
+   "previousHash": "e1c66c274659dadc42b8f66d246047c3451a686f7e2dc0fef2c2b8237a865c84",
+   "dataHash": "3af5de9d9e6c87827361b584a12e52155beba177596ef671624c05bf1aed360e",
+   "dataHashVerified": true,
+   "txCount": 1,
+   "txs": [
+    {
+     "txId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+     "type": "endorser",
+     "timestamp": "2025-11-16T08:00:00.000Z",
+     "creator": "BankAMSP",
+     "chaincode": "fraudintel",
+     "fn": "recordPayment",
+     "args": [
+      "3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b"
+     ],
+     "endorsers": [
+      "BankAMSP",
+      "BankCMSP"
+     ],
+     "signer": {
+      "msp": "BankAMSP",
+      "subject": "User1@banka.example.com",
+      "keyFingerprint": "250a89dcf1bb9fb79810c94608964a60fab0ba8d7ca1c4a00722592b99557145",
+      "signatureValid": true,
+      "issuedByOrgCA": true
+     },
+     "endorsements": [
+      {
+       "msp": "BankAMSP",
+       "subject": "peer0.banka.example.com",
+       "keyFingerprint": "7a32c90b4bb3a388255b675d5110d0a5cbb4f2530d7d626c4cdb7ceb8ddf90d6",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      },
+      {
+       "msp": "BankCMSP",
+       "subject": "peer0.bankc.example.com",
+       "keyFingerprint": "37d495c4795ecb1c8b41638bbb01e0f75ff6e10483468eba4b2ebe4f21df3b36",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      }
+     ],
+     "privateCollections": [
+      "pay_BankA_BankC"
+     ],
+     "validation": 0,
+     "valid": true
+    }
+   ]
+  },
+  {
+   "number": 2,
+   "hash": "e1c66c274659dadc42b8f66d246047c3451a686f7e2dc0fef2c2b8237a865c84",
+   "previousHash": "09cd6971afea7de965e56ea85b531dc8257e588e705965465121eafc5397857f",
+   "dataHash": "9f8fdef0d653929931805886c9761dd3422cba0b254117ab9faaa6304e2fe919",
+   "dataHashVerified": true,
+   "txCount": 2,
+   "txs": [
+    {
+     "txId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+     "type": "endorser",
+     "timestamp": "2025-11-16T08:00:00.000Z",
+     "creator": "BankCMSP",
+     "chaincode": "fraudintel",
+     "fn": "confirmReport",
+     "args": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "ANALYST"
+     ],
+     "endorsers": [
+      "BankCMSP",
+      "BankAMSP"
+     ],
+     "signer": {
+      "msp": "BankCMSP",
+      "subject": "User1@bankc.example.com",
+      "keyFingerprint": "55191fe92d7bf4271a542713f13e36555bdf39a4cc2e97db7c99f2b04cfa4b65",
+      "signatureValid": true,
+      "issuedByOrgCA": true
+     },
+     "endorsements": [
+      {
+       "msp": "BankCMSP",
+       "subject": "peer0.bankc.example.com",
+       "keyFingerprint": "37d495c4795ecb1c8b41638bbb01e0f75ff6e10483468eba4b2ebe4f21df3b36",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      },
+      {
+       "msp": "BankAMSP",
+       "subject": "peer0.banka.example.com",
+       "keyFingerprint": "7a32c90b4bb3a388255b675d5110d0a5cbb4f2530d7d626c4cdb7ceb8ddf90d6",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      }
+     ],
+     "privateCollections": [],
+     "validation": 0,
+     "valid": true
+    },
+    {
+     "txId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+     "type": "endorser",
+     "timestamp": "2025-11-16T08:00:00.000Z",
+     "creator": "BankBMSP",
+     "chaincode": "fraudintel",
+     "fn": "confirmReport",
+     "args": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "ANALYST"
+     ],
+     "endorsers": [
+      "BankBMSP",
+      "BankCMSP"
+     ],
+     "signer": {
+      "msp": "BankBMSP",
+      "subject": "User1@bankb.example.com",
+      "keyFingerprint": "4e697b37a70464d82ba78219dbb0af66c1d1592a3ee450fc1ed46fa979f84f8c",
+      "signatureValid": true,
+      "issuedByOrgCA": true
+     },
+     "endorsements": [
+      {
+       "msp": "BankBMSP",
+       "subject": "peer0.bankb.example.com",
+       "keyFingerprint": "fba7053fe024a47cb60f2ef6c55a99d798576d80e84341b3739eaab6f8867dec",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      },
+      {
+       "msp": "BankCMSP",
+       "subject": "peer0.bankc.example.com",
+       "keyFingerprint": "37d495c4795ecb1c8b41638bbb01e0f75ff6e10483468eba4b2ebe4f21df3b36",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      }
+     ],
+     "privateCollections": [],
+     "validation": 11,
+     "valid": false
+    }
+   ]
+  },
+  {
+   "number": 1,
+   "hash": "09cd6971afea7de965e56ea85b531dc8257e588e705965465121eafc5397857f",
+   "previousHash": "a335d6ebaaf1fa482c772cf9429ce61e34dc87852520bdb76e5dafc930e15e80",
+   "dataHash": "bea4ab831fbcb44d5cc9176e79e3e75853faeba21c58813ef9680ec4e533e2fc",
+   "dataHashVerified": true,
+   "txCount": 1,
+   "txs": [
+    {
+     "txId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+     "type": "endorser",
+     "timestamp": "2025-11-16T08:00:00.000Z",
+     "creator": "BankAMSP",
+     "chaincode": "fraudintel",
+     "fn": "reportMule",
+     "args": [
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "UPI",
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "ANALYST",
+      "HIGH"
+     ],
+     "endorsers": [
+      "BankAMSP",
+      "BankBMSP"
+     ],
+     "signer": {
+      "msp": "BankAMSP",
+      "subject": "User1@banka.example.com",
+      "keyFingerprint": "250a89dcf1bb9fb79810c94608964a60fab0ba8d7ca1c4a00722592b99557145",
+      "signatureValid": true,
+      "issuedByOrgCA": true
+     },
+     "endorsements": [
+      {
+       "msp": "BankAMSP",
+       "subject": "peer0.banka.example.com",
+       "keyFingerprint": "7a32c90b4bb3a388255b675d5110d0a5cbb4f2530d7d626c4cdb7ceb8ddf90d6",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      },
+      {
+       "msp": "BankBMSP",
+       "subject": "peer0.bankb.example.com",
+       "keyFingerprint": "fba7053fe024a47cb60f2ef6c55a99d798576d80e84341b3739eaab6f8867dec",
+       "signatureValid": true,
+       "issuedByOrgCA": true
+      }
+     ],
+     "privateCollections": [],
+     "validation": 0,
+     "valid": true
+    }
+   ]
+  },
+  {
+   "number": 0,
+   "hash": "a335d6ebaaf1fa482c772cf9429ce61e34dc87852520bdb76e5dafc930e15e80",
+   "previousHash": "",
+   "dataHash": "af86eda72452b37625146c08a10466c89a452326fc736647911e203f5722aa3b",
+   "dataHashVerified": true,
+   "txCount": 1,
+   "txs": [
+    {
+     "txId": "",
+     "type": "config",
+     "timestamp": "2025-11-16T08:00:00.000Z",
+     "creator": "OrdererMSP",
+     "chaincode": null,
+     "fn": null,
+     "args": [],
+     "endorsers": [],
+     "signer": {
+      "msp": "OrdererMSP",
+      "subject": "User1@orderer.example.com",
+      "keyFingerprint": "f6f935684a76ed0d14cc049d0801d8e3691029db47a044ddefbf9a8d95c3a5e4",
+      "signatureValid": null,
+      "issuedByOrgCA": true
+     },
+     "endorsements": [],
+     "privateCollections": [],
+     "validation": 0,
+     "valid": true
+    }
+   ]
+  }
+ ],
+ "reportTx": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+ "paymentTx": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+}

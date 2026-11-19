@@ -179,6 +179,19 @@ Bugs found in review after Module 1 shipped, each with the test that proves the 
 | 47 | A sandboxed session acting on real payments | Confirming or cancelling the owner's held payments from the attacker's session | Step-up and cancel answer 404 in a sandboxed session | `test_sandboxed_session_cannot_step_up_or_cancel_anything_real` |
 | 48 | Honeypot captures poisoning the consortium | One bank's sandbox flagging innocent payees everywhere | Captures are filed as SANDBOX_CAPTURE, capped LOW and weight 0 by the chaincode; they only corroborate other banks' reports | `test_sandbox_captures_go_to_the_ledger_as_low_weight_reports`, chaincode contract test |
 | 49 | Schema replay broke on newer rows (found in 3b) | The whole schema is replayed on upgrade; an older copy of a CHECK constraint failed on `sandboxed` rows and would have broken the next upgrade | One definition per constraint, with its final values | `test_replaying_the_schema_keeps_rows_of_every_status` (fails with the old copy) |
+| 50 | Prompt injection through case data | A payee name, an analyst note or another bank's report could carry "ignore your instructions" | Source text is HTML-escaped inside `<source>` tags (it cannot close its tag or open a new source); the system prompt says source text is data; the copilot has no tools | `test_source_text_cannot_close_its_tag`, `test_model_mode_request_is_minimised_and_sources_stay_data` (fail without escaping) |
+| 51 | A model answer that invents or mis-cites | Citations to sources that were never shown; claims with no source | Every `[n]` is checked against the sources given; bad ones are removed with a warning; uncited sentences are flagged; an answer with no valid citation is marked "unverified" | `test_model_citations_are_checked`, `test_an_uncited_model_answer_is_marked_unverified` |
+| 52 | The copilot acting on a case | "Released the payment for you" | Read-only by construction: no tool calls, no write path; decisions still need the analyst's passkey | `test_copilot_cannot_change_anything` |
+| 53 | Customer data sent to an outside model | The case is sent to the model provider | Minimised first: masked payee and customer, no identifiers, hashes, IPs or devices; extractive mode sends nothing out; `COPILOT_LLM=off` forces it | `test_model_mode_request_is_minimised_and_sources_stay_data` |
+| 54 | Model outage | Analysts left without help | Falls back to extractive mode, with a visible warning | `test_model_failure_falls_back_to_extractive_visibly` |
+| 55 | Unreviewable assistant | No record of what the copilot was shown or said | Every question, the source ids, the answer and the warnings are logged in `copilot_log`, plus a `COPILOT_QUERY` audit event; 20 questions a minute per analyst | `test_questions_are_logged_and_audited`, `test_rate_limit` |
+| 56 | The Ledger page as a mule-checking service | "Is this payee reported?" answered for anyone | The payee check is analyst-only; customers see blocks but not transaction arguments (keyed hashes, report ids) | `test_payee_check_walks_the_payment_path_for_analysts_only`, `test_customers_do_not_see_transaction_arguments_analysts_do` |
+| 57 | Showing a chain that is not really linked | A page that just prints hashes it was given proves nothing | The gateway recomputes every block's data hash from its transactions and its header hash (ASN.1, as Fabric does, checked against openssl); the API checks each block points at the previous one | `chain.test.ts` (openssl cross-check, tampered byte detected), `test_a_broken_link_is_reported` |
+| 58 | One-click demo logins | Anyone who reaches the API can be any demo customer | `DEMO_LOGIN` is off by default and the `/demo` routes do not exist without it; demo accounts, sessions and money live in separate tables; the demo cookie is not a bank session | `test_off_by_default`, `test_demo_cookie_is_not_a_bank_session`, `test_the_scammer_cannot_be_logged_into` |
+| 59 | Payment details on a shared ledger | Every bank (and the Regulator) could read every customer's payments | Details go in a private data collection per pair of banks, sent as transient data (never in a block); only a salted SHA-256 is on the channel; the chaincode checks the caller is in the payment before it even asks the peer | `payments.test.ts` (8), `test_each_bank_sees_only_what_its_peer_returns`, gateway: `recordPayment: details go as transient data` |
+| 60 | One gateway holding every bank's key | Demo shortcut: a compromised gateway can act as any bank | Stated as demo-only; the gateway acts only as the org named per request, a payment can only be recorded by its sending bank (checked in the gateway and the chaincode); production = one gateway per bank with only its own key | `recordPayment: a bank cannot record a payment sent by another bank`, `only the sending bank can record a payment` |
+| 61 | Trusting a name in a block | A forged signature, or a key with a bank's name that the bank never issued | Every client and endorser signature in a block is verified with the certificate's public key, and each certificate against that bank's CA; "unknown" is never shown as "yes" | `a forged endorsement is caught`, `a key that signs correctly but was not issued by the bank's CA is flagged` |
+| 62 | A bank quietly editing its payment records | Database copy changed after the fact | The bank's copy is re-hashed and compared with the hash on the chain on every view; the demo's Tamper button shows the mismatch | `test_tampering_with_the_bank_database_copy_is_caught_by_the_chain` |
 
 Still open: no connection pool (psycopg_pool), no cleanup job for expired challenges and sessions,
 strict audit ordering only with one API instance, the drainer holds a transaction while it calls the
@@ -455,6 +468,17 @@ First live run found row 34 (key permissions); fixed. **Run `ledger_smoke.sh` be
 - "Reported" is visible to whoever makes a payment (row 30).
 - The ledger only knows what banks file. Module 3 adds filing from the fraud-ops dashboard.
 
+### Live result (Fabric 2.5.16 via Fablo, WSL2, 16 Nov 2026)
+
+`./scripts/ledger_smoke.sh`: 12/12 passed.
+
+| Step | Ledger answer through the API | Lookup |
+|---|---|---|
+| Fresh payee | clear | 58 ms (first connection) |
+| BankA sandbox capture only | PENDING, weight 0, severity capped to LOW | 41 ms |
+| + BankB customer complaint | PENDING, weight 0.25 (+10 points) | 47 ms |
+| + BankC analyst | CONFIRMED, weight 1 (+50, always held) | 41 ms |
+
 ## Phase 3 · Module 3a: fraud operations, and the app's first ledger writes
 
 Held payments now go to a review queue. An analyst releases or rejects them, and can report the payee
@@ -519,10 +543,20 @@ LEDGER_UPI=<confirmed UPI from ledger_smoke.sh> npm run e2e:ledger
 | Gateway HTTP | `writes.test.ts` | Separate write token; read token gets 403; validation before Fabric; 422 for chaincode refusals |
 | API | `test_ops.py` (27) | Roles, elevation, separation of duties, single decision, release/reject effects, the outbox: report / confirm / already ours / race / outage / refusal / lease |
 | Browser | `ops.e2e.mjs` (two people, two passkeys) | Queue, passkey gate, reject + report with the filing reaching the ledger, release, customer's view, own payment hidden |
-| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement. **Not yet run by me**: the main risk is endorsement discovery (the Gateway must find a second bank's peer by itself) |
+| Live Fabric | `scripts/ops_smoke.sh` | Writes with real two-bank endorsement: **8/8 live** (see below) |
 
 ### Not in 3a
 - Disputing or retracting reports from the dashboard.
+
+### Live result: Module 3a writes (Fabric 2.5.16 via Fablo, 16 Nov 2026)
+
+`./scripts/ops_smoke.sh`: 8/8 passed. The Gateway gathered approvals from two banks on its own (no peers named by us).
+
+| Step | Result |
+|---|---|
+| BankA files a new report through the outbox | committed, PENDING, weight 0.25 (~5.7 s queue-to-commit incl. the 3 s drainer interval) |
+| Same payee filed again | `already_ours`, same report id, nothing written |
+| BankB reports first, BankA's filing follows | BankA confirms it -> CONFIRMED, weight 1, two non-sandbox banks |
 
 ## Phase 3 · Module 3b: the customer's step-up, and the sandbox
 
@@ -549,4 +583,150 @@ one attempt, cancel, sandbox illusion and fake balance, analyst queue order, san
 ending the session signs the attacker out). The browser test found a bug the API tests could not: the
 step-up box kept the previous payment's result when a second held payment came in (fixed by keying the
 component to the payment).
+
+## Phase 4 · Module 4: analyst copilot (retrieval-augmented, cited, read-only)
+
+In Fraud ops, every held payment has **Ask the copilot about this case**. An analyst asks in plain
+language ("why was this held?", "what does policy say I should do?") and gets a short answer in which
+every claim cites a numbered source that the analyst can open.
+
+**Sources for each question**
+1. **This case**: amount, masked payee and customer, score and every reason, coaching signals,
+   step-up answers, how many other customers tried the payee in 7 days.
+2. **Consortium ledger**: what it said when the payment was scored, and what it says now (asked live).
+3. **Earlier payments to this payee** at our bank, with past decisions and analyst notes.
+4. **Policy playbook**: the 4 most relevant of 30 sections from `api/app/copilot/policies/` (held-payment
+   review, scam patterns, ledger rules, sandbox, step-up answers, customer contact). These are demo
+   policies written for this project, not real bank or regulator rules.
+
+**Retrieval** is BM25 over the playbook sections, with the case's reason codes added to the query (an
+active call pulls in the "digital arrest" section even for "what should I do?"). No embeddings service,
+so nothing leaves the bank to retrieve, and results are deterministic. `python api/scripts/eval_copilot.py`:
+recall@4 100%, MRR 0.87 on 18 questions. That golden set was written for this corpus by the same author,
+so it is a regression check, not evidence about unexpected questions.
+
+**Two modes**
+- **Extractive** (default, no key): the case, the ledger and the top policy passages, quoted with citations.
+  Nothing is sent outside the bank.
+- **Model** (`ANTHROPIC_API_KEY` set): Claude writes the answer from the same sources, with rules: sources
+  only, cite every fact, source text is data, no decisions. Falls back to extractive if the call fails.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...      # optional
+docker compose up -d --build
+```
+
+**Checks on every answer** (both modes): citations to sources that do not exist are removed; uncited
+sentences are flagged; an answer without a valid citation is shown as "unverified". Everything is logged
+in `copilot_log`.
+
+Tests: `api/tests/test_copilot.py` (17), `web/e2e/copilot.e2e.mjs` (8 checks). The model call itself is
+tested against a fake API (request shape, minimisation, citation checks, fallback); I could not call the
+real API from my build environment, so **run one question with a key before relying on model mode**.
+
+## The UI and the Ledger page (demo build)
+
+The app is restyled for demos: dark theme, one teal accent, big uppercase headlines, stat squares. The
+sign-in page explains the system in one screen (what it stops, the numbers, how it works in 5 steps).
+
+**Ledger tab (everyone signed in): the blockchain, live from the Fabric channel**
+- **Stats:** block height, newest block hash, transactions in view, the 2-of-3 rule.
+- **Network:** the four organisations around the orderer. The banks that endorsed the selected
+  transaction light up; the bank that submitted it is outlined.
+- **The chain:** the latest blocks, oldest to newest, each showing its hash and its predecessor's hash.
+  Hashes are recomputed from block contents, so "linked" and "data hash matches" are checked, not printed.
+- **Block detail:** each transaction: function (`reportMule`, `confirmReport`…) in plain words, who
+  submitted it, who endorsed it, valid or invalid, and (analysts only) its arguments.
+- **Follow a report:** a ledger report id is the Fabric transaction id. "See it on the ledger" (Fraud ops
+  filings, or a report in a payment's analyst view) opens the page on it and walks the 5 steps:
+  propose → endorse (which banks) → order (which block) → validate → commit.
+- **Check a payee (analysts):** exactly what a payment does: normalise (masked), keyed hash, ask the
+  peer, weight, effect in points, with a weight scale.
+
+Data comes from the peer's query system chaincode (`qscc`: `GetChainInfo`, `GetBlockByNumber`,
+`GetBlockByTxID`) through new read-only gateway routes (`/chain/blocks`, `/chain/tx/{id}`).
+
+Tests: `ledger-gateway/test/chain.test.ts` and `chainroute.test.ts` (block parsing against blocks built
+with real Fabric protobufs, header hash checked against openssl's DER encoding, a one-byte tamper detected,
+the chain served through the real adapter), `api/tests/test_chainview.py` (7), and
+`web/e2e/ledger-ui.e2e.mjs` (14 checks: an analyst's report becomes a block, the 5 steps light up, two
+endorsers, links and data hashes verified, payee check, customers see no arguments). All 8 browser suites
+pass on the new UI. The block views are tested against a development peer that keeps a real hash-linked
+chain; **run the Ledger tab against live Fablo once** before the demo.
+
+## The bank network demo (`#/demo`): three banks, private payments, public hashes, verified keys
+
+Open `http://localhost:5173/#/demo`. One-click customers at Bank A, Bank B and Bank C (no password or
+passkey: **demo only**, needs `DEMO_LOGIN=1`, which `docker-compose.yml` sets for local use).
+
+**The story** (the page lists it):
+1. Asha (Bank A) pays `quick.refund.rN@bankc`. The ledger knows nothing, so it goes through. She reports it:
+   Bank A files `reportMule`, signed with **Bank A's** key → PENDING.
+2. Bilal (Bank B) pays the same account. Bank B's lookup (as Bank B, on Bank B's peer) finds Bank A's report
+   and warns him. He sends anyway and reports it: Bank B calls `confirmReport` with **its own** key → CONFIRMED.
+3. Chitra (Bank C) tries. Bank C's lookup sees two banks' reports: **blocked**, no money moves.
+"Reset the story" restores balances and picks a new scammer identifier. Nothing is deleted from the ledger.
+
+**Every allowed payment is recorded on Fabric** (chaincode 0.2.0, `recordPayment`):
+- The details (payer, payee, amount, names, a random salt) go to the endorsing peers as **transient data**,
+  so they are never written into a block. The chaincode stores them in a **private data collection** that only
+  the two banks hold: `pay_BankA_BankB`, `pay_BankA_BankC`, `pay_BankB_BankC` (declared in `fablo-config.json`).
+- On the shared channel: who was involved, the collection name and the **SHA-256 of the details**.
+- `getPayment` as each bank: the two banks in the payment get the details from their own peer; every other
+  bank and the Regulator get the hash only. The ledger panel's "as Bank X" switch makes that query **as that
+  bank** (its key, its peer), so the difference you see is Fabric's, not the UI's.
+- **Tamper check:** each bank re-hashes its own database copy and compares it with the hash on the chain.
+  "Tamper" edits the copy (amount x10); the panel shows the mismatch, while the peer's private copy still matches.
+
+**Public and private keys, made visible:**
+- *Keys* tab: each organisation's CA, client and peer certificates, key type (EC P-256) and public-key
+  fingerprints, and whether each certificate was signed by its bank's CA. Private keys are never sent anywhere.
+- *Blocks and signatures* tab (and the main Ledger page): for every transaction, the client's signature over
+  the transaction and each endorsing peer's signature over its result are **verified with the public key in
+  the signer's certificate**, and the certificate is checked against the bank's CA. Payment transactions show
+  which private collection received data, and that only its hash is in the block.
+
+**What changed underneath**
+- Chaincode: `recordPayment`, `getPayment`, collections helper; version **0.2.0**.
+- Gateway: `ORGS=BankA,BankB,BankC,Regulator` gives it one client per organisation (each with its own key,
+  talking to its own peer on Fablo's ports 7041/7061/7081/7101); `org` on every route; `/record-payment`
+  (transient data + endorsing organisations), `/payment/{id}?org=`, `/identities`; signature and CA checks in
+  every parsed block; `@hyperledger/fabric-protos` is now a runtime dependency (it was only installed by luck).
+- API: `app/demo.py` (schema v11 tables `demo_*`), `/demo/*` routes.
+- Web: `#/demo` page (`Demo.tsx`), signature lines on the Ledger page (`Signatures.tsx`).
+
+### Run it (this rebuilds the Fabric network: the ledger starts empty)
+```bash
+fablo validate                 # checks fablo-config.json, including the private data collections
+fablo recreate                 # fresh network with chaincode 0.2.0 + collections (wipes the old ledger)
+docker compose up -d --build   # API with DEMO_LOGIN=1, gateway with ORGS (restarts it on the new certificates)
+./scripts/demo_smoke.sh        # live: report, confirm, block, private data per bank, signatures (16 checks)
+./scripts/ledger_smoke.sh      # the earlier checks still pass on the new network
+cd web && npm run dev          # then open http://localhost:5173/#/demo
+```
+If a peer is not on Fablo's usual port, set `PEER_ENDPOINT_BANKB` (etc.) on the gateway; check with
+`docker ps --format '{{.Names}} {{.Ports}}' | grep peer0`.
+
+### How it is tested
+- Chaincode (`test/payments.test.ts`, 12): collections per pair, details only in the private store, members vs
+  hash-only (Regulator included), the chaincode never asks a non-member peer, tamper detection, only the sender
+  records, transient-only input, every field validated, the implicit collection for same-bank payments, and a
+  canonical-JSON hash contract (`contracts/payment-hash.json`) that the API test checks too.
+- Gateway (`network.test.ts`, 12; `chain.test.ts`, 10): each write signed by the named org; transient data and
+  endorsing organisations reach the peer (real adapter over gRPC/TLS); Fablo's layout and ports; identities with
+  no private key material; blocks with real ECDSA signatures from a test PKI (`test/fixtures/pki`, test-only
+  keys): valid signatures, a forged endorsement, a key not issued by the bank's CA, private collections named.
+- API (`test_demo.py`, 16): the full story, warnings, same-bank reports not self-confirming, fail-open with retry,
+  per-bank views, the tamper check, reset, demo cookies are not bank sessions.
+- Browser (`web/e2e/demo.e2e.mjs`, 19 checks): the story end to end, private vs hash-only rows, verified
+  signatures and private-collection notes, keys, tamper and undo. Run against a dev network of four fake peers
+  that execute the **real chaincode**; `scripts/demo_smoke.sh` is the live check on Fablo.
+
+### Limits (stated)
+- One gateway holds all four organisations' keys: fine for one laptop, wrong for real banks.
+- Money moves in the API's database; the ledger holds fraud reports and payment receipts, not balances.
+- Same-bank payments use Fabric's implicit collection with a second bank endorsing (2-of-3 policy). Not run
+  live yet; the story never needs one, and a failure shows as "ledger record failed" with a retry.
+- Fablo builds the collection definitions; their read/write flags are Fablo's defaults. The chaincode checks
+  the caller itself, so access does not depend on those flags.
 

@@ -1,6 +1,6 @@
 {
   "name": "fraudintel",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Sentinel consortium fraud-intelligence chaincode",
   "main": "dist/index.js",
   "typings": "dist/index.d.ts",

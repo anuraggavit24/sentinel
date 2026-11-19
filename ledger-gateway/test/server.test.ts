@@ -27,6 +27,15 @@ class FakeLedger implements LedgerClient {
   async submit(): Promise<string> {
     throw new Error('writes are disabled in this server');
   }
+  async chainInfo(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
+  async blockByNumber(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
+  async blockByTxId(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
   close(): void {}
 }
 

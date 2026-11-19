@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Context, Contract, Info, Returns, Transaction } from 'fabric-contract-api';
 import stringify from 'json-stringify-deterministic';
 import sortKeysRecursive from 'sort-keys-recursive';
@@ -10,6 +11,10 @@ import {
   MuleReport,
   OUTCOMES,
   Outcome,
+  PAYMENT_VERDICTS,
+  PaymentPrivate,
+  PaymentPublic,
+  PaymentVerdict,
   REGULATOR_MSP,
   SEVERITIES,
   SOURCES,
@@ -25,12 +30,38 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ACTIVE: readonly Status[] = ['PENDING', 'CONFIRMED', 'DISPUTED'];
 const INDEX_VALUE = Buffer.from('\u0000'); // putState with an empty value means delete in Fabric
+const PAYMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UPI_ID = /^[a-z0-9._-]{2,64}@[a-z][a-z0-9]{1,30}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
+const MAX_PAISE = 1_000_000_000_00; // ₹1 crore
+
+/**
+ * Where a payment's details live. Two banks: their shared collection, defined in fablo-config.json
+ * (e.g. pay_BankA_BankB). One bank (both customers at the same bank): that bank's implicit collection,
+ * which Fabric provides without configuration.
+ */
+export function paymentCollection(fromBank: string, toBank: string): string {
+  if (fromBank === toBank) return `_implicit_org_${fromBank}`;
+  const [x, y] = [fromBank, toBank].sort().map((m) => m.replace(/MSP$/, ''));
+  return `pay_${x}_${y}`;
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function paymentKey(paymentId: string): string {
+  return `payment:${paymentId}`;
+}
 
 // ---------- deterministic helpers (every endorsing peer must produce identical bytes) ----------
 
 function toJson(value: object): string {
   return stringify(sortKeysRecursive(value));
 }
+
+/** The canonical JSON every peer writes (exported so other components can prove they hash the same bytes). */
+export const canonicalJson = toJson;
 
 function toBytes(value: object): Uint8Array {
   return Buffer.from(toJson(value));
@@ -462,7 +493,125 @@ export class FraudIntelContract extends Contract {
     return Buffer.from(data).toString('utf8');
   }
 
+
+  // ---------- payments: details private to the two banks, a hash public to all ----------
+
+  /**
+   * The sending bank records a payment. The details come in the transient field "payment" (not part of
+   * the transaction, so never in a block); they go into the two banks' private collection, and only
+   * their SHA-256 goes on the shared channel. paymentId is the bank's own id for the transfer.
+   */
+  @Transaction()
+  @Returns('string')
+  public async recordPayment(ctx: Context, paymentId: string): Promise<string> {
+    const org = this.requireBank(ctx);
+    if (!PAYMENT_ID.test(paymentId)) throw new Error('paymentId must be a lowercase UUID');
+    const transient = ctx.stub.getTransient();
+    const raw = transient.get('payment');
+    if (!raw || raw.length === 0) throw new Error('the payment details must be sent in the transient field "payment"');
+    if (raw.length > 2048) throw new Error('payment details are too large');
+    let given: Record<string, unknown>;
+    try {
+      given = JSON.parse(Buffer.from(raw).toString('utf8'));
+    } catch {
+      throw new Error('transient "payment" must be JSON');
+    }
+    const record = this.checkPayment(given, paymentId);
+    if (record.fromBank !== org) {
+      throw new Error(`Only the sending bank records a payment; caller is ${org}, sender is ${record.fromBank}`);
+    }
+    const existing = await ctx.stub.getState(paymentKey(paymentId));
+    if (existing && existing.length > 0) throw new Error(`Payment ${paymentId} is already recorded`);
+
+    const collection = paymentCollection(record.fromBank, record.toBank);
+    const bytes = toBytes(record);
+    await ctx.stub.putPrivateData(collection, paymentId, bytes);
+    const pub: PaymentPublic = {
+      docType: 'payment',
+      paymentId,
+      fromBank: record.fromBank,
+      toBank: record.toBank,
+      collection,
+      dataHash: sha256Hex(bytes),
+      txId: ctx.stub.getTxID(),
+      txTime: txTime(ctx),
+    };
+    await ctx.stub.putState(paymentKey(paymentId), toBytes(pub));
+    ctx.stub.setEvent('PaymentRecorded', toBytes({ paymentId, fromBank: pub.fromBank, toBank: pub.toBank }));
+    return toJson(pub);
+  }
+
+  /**
+   * Anyone on the channel gets the public record and Fabric's own hash of the private data (every peer
+   * keeps it). Only the two banks in the payment get the details, and only from their own peer.
+   */
+  @Transaction(false)
+  @Returns('string')
+  public async getPayment(ctx: Context, paymentId: string): Promise<string> {
+    const org = this.requireKnownOrg(ctx);
+    if (!PAYMENT_ID.test(paymentId)) throw new Error('paymentId must be a lowercase UUID');
+    const data = await ctx.stub.getState(paymentKey(paymentId));
+    if (!data || data.length === 0) throw new Error(`Payment ${paymentId} does not exist`);
+    const pub = JSON.parse(Buffer.from(data).toString('utf8')) as PaymentPublic;
+    const fabricHashBytes = await ctx.stub.getPrivateDataHash(pub.collection, paymentId);
+    const fabricHash = fabricHashBytes && fabricHashBytes.length > 0 ? Buffer.from(fabricHashBytes).toString('hex') : null;
+
+    const member = org === pub.fromBank || org === pub.toBank;
+    let details: PaymentPrivate | null = null;
+    let note: string;
+    if (!member) {
+      note = `Private to ${pub.fromBank} and ${pub.toBank}: ${org} only sees the hash`;
+    } else {
+      const bytes = await ctx.stub.getPrivateData(pub.collection, paymentId);
+      if (bytes && bytes.length > 0) {
+        details = JSON.parse(Buffer.from(bytes).toString('utf8')) as PaymentPrivate;
+        note = sha256Hex(bytes) === pub.dataHash ? 'Details match the public hash' : 'DETAILS DO NOT MATCH THE PUBLIC HASH';
+      } else {
+        note = 'This peer has not received the private details yet';
+      }
+    }
+    return toJson({
+      viewer: org,
+      access: member ? 'member' : 'hash-only',
+      public: pub,
+      details,
+      fabricHash,
+      fabricHashMatches: fabricHash === pub.dataHash,
+      note,
+    });
+  }
+
   // ---------- internals ----------
+
+  private checkPayment(g: Record<string, unknown>, paymentId: string): PaymentPrivate {
+    const str = (name: string, re: RegExp, rule: string): string => {
+      const v = g[name];
+      if (typeof v !== 'string' || !re.test(v)) throw new Error(`payment.${name} must be ${rule}`);
+      return v;
+    };
+    if (g.paymentId !== paymentId) throw new Error('payment.paymentId must equal the paymentId argument');
+    const fromBank = oneOf<string>('payment.fromBank', String(g.fromBank), BANK_MSPS);
+    const toBank = oneOf<string>('payment.toBank', String(g.toBank), BANK_MSPS);
+    const amount = g.amountPaise;
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 1 || amount > MAX_PAISE) {
+      throw new Error('payment.amountPaise must be a whole number of paise between 1 and 10000000000');
+    }
+    const record: PaymentPrivate = {
+      paymentId,
+      fromBank,
+      toBank,
+      payer: str('payer', UPI_ID, 'a UPI ID'),
+      payerName: str('payerName', /^[\p{L} .'-]{1,60}$/u, 'a name of up to 60 letters'),
+      payee: str('payee', UPI_ID, 'a UPI ID'),
+      amountPaise: amount,
+      verdict: oneOf<PaymentVerdict>('payment.verdict', String(g.verdict), PAYMENT_VERDICTS),
+      createdAt: str('createdAt', ISO_TIME, 'an ISO-8601 time'),
+      salt: str('salt', HEX64, '64 lowercase hex characters'),
+    };
+    const extra = Object.keys(g).filter((k) => !(k in record));
+    if (extra.length) throw new Error(`payment has unknown fields: ${extra.join(', ')}`);
+    return record;
+  }
 
   private requireBank(ctx: Context): string {
     const msp = ctx.clientIdentity.getMSPID();

@@ -1,0 +1,16 @@
+{
+ "record": {
+  "paymentId": "3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b",
+  "fromBank": "BankAMSP",
+  "toBank": "BankCMSP",
+  "payer": "asha@banka",
+  "payerName": "Zoë D'Souza-Ñúñez",
+  "payee": "quick.refund.r1@bankc",
+  "amountPaise": 2000000,
+  "verdict": "WARNED",
+  "createdAt": "2026-11-19T10:00:00.123Z",
+  "salt": "abababababababababababababababababababababababababababababababab"
+ },
+ "canonical": "{\"amountPaise\":2000000,\"createdAt\":\"2026-11-19T10:00:00.123Z\",\"fromBank\":\"BankAMSP\",\"payee\":\"quick.refund.r1@bankc\",\"payer\":\"asha@banka\",\"payerName\":\"Zoë D'Souza-Ñúñez\",\"paymentId\":\"3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b\",\"salt\":\"abababababababababababababababababababababababababababababababab\",\"toBank\":\"BankCMSP\",\"verdict\":\"WARNED\"}",
+ "sha256": "bbdb81293c944bcff8ab4471b11b48d08dba16524f0c1b94f0517190cc4b8f55"
+}

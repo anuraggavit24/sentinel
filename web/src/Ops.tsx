@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import Copilot from "./Copilot";
 import {
   decidePayment,
   elevateOps,
@@ -7,6 +8,7 @@ import {
   getOpsStatus,
   getQueue,
   getSandboxSessions,
+  traceOnLedger,
   revokeSandboxSession,
   type SandboxSession,
   type Filing,
@@ -176,6 +178,10 @@ export default function Ops() {
                   </span>
                 </div>
                 {!elevated && <p className="muted small">Verify with your passkey (top right) to decide.</p>}
+                <details className="copilot-wrap">
+                  <summary>Ask the copilot about this case</summary>
+                  <Copilot key={item.id} paymentId={item.id} />
+                </details>
               </div>
             )}
           </li>
@@ -226,7 +232,16 @@ export default function Ops() {
                 {f.status === "pending" && f.attempts > 0 && <span className="muted small"> retry {f.attempts}</span>}
               </td>
               <td className="muted small">
-                {f.reportId ? <code title={f.reportId}>{f.reportId.slice(0, 12)}…</code> : f.lastError ?? ""}
+                {f.reportId ? (
+                  <>
+                    <code title={f.reportId}>{f.reportId.slice(0, 12)}…</code>
+                    <button className="link" type="button" onClick={() => traceOnLedger(f.reportId!)}>
+                      See it on the ledger
+                    </button>
+                  </>
+                ) : (
+                  f.lastError ?? ""
+                )}
               </td>
               <td className="muted small">{f.source === "SANDBOX_CAPTURE" ? "sandbox capture" : "analyst"} · {f.severity}</td>
             </tr>

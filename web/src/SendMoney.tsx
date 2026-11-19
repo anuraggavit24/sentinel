@@ -10,6 +10,7 @@ import {
   scorePayment,
   type Band,
   type Decision,
+  traceOnLedger,
   type ConsortiumView,
   type DemoSignals,
   type PayeeType,
@@ -417,6 +418,9 @@ function ConsortiumLine({ c }: { c: ConsortiumView }) {
             <li key={r.reportId}>
               {r.status} · {r.severity} · reported by {r.reporterOrg} via {r.source.toLowerCase().replace(/_/g, " ")} ·{" "}
               {r.nonSandboxBanks} non-sandbox bank(s) · weight {r.weight} · <code>{r.reportId.slice(0, 12)}</code>
+              <button className="link" type="button" onClick={() => traceOnLedger(r.reportId)}>
+                See it on the ledger
+              </button>
             </li>
           ))}
         </ul>

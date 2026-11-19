@@ -26,6 +26,15 @@ class FakeLedger implements LedgerClient {
     if (this.fail) throw this.fail;
     return JSON.stringify({ reportId: TX, status: 'PENDING', reporterOrg: 'BankAMSP' });
   }
+  async chainInfo(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
+  async blockByNumber(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
+  async blockByTxId(): Promise<Uint8Array> {
+    throw new LedgerError('no chain in this fake', 'unavailable');
+  }
   close(): void {}
 }
 
